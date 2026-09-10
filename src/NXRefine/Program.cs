@@ -107,7 +107,6 @@ namespace NXRefine
         private static void ReportCount(NxContext context, string label, int count)
         {
             context.Log("Processed " + count + " " + label + ".");
-            if (count > 0) MessageBox.Show("Processed " + count + " " + label + ".", "NX Refine", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private static void ShowAbout()

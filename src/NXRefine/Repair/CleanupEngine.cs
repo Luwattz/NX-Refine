@@ -88,19 +88,27 @@ namespace NXRefine.Repair
                 MessageBox.Show("No history-based engraving or text features were found. Dumb-solid marking recognition is planned for a later milestone.", "NX Refine", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return 0;
             }
-            if (!Confirm("Delete " + candidates.Length + " history-based engraving/text features?")) return 0;
-
-            Session.UndoMarkId mark = context.Session.SetUndoMark(Session.MarkVisibility.Visible, "NX Refine - Remove Markings");
+            foreach (Feature candidate in candidates) candidate.Highlight();
             try
             {
-                context.Session.UpdateManager.AddObjectsToDeleteList(candidates);
-                context.Session.UpdateManager.DoUpdate(mark);
-                return candidates.Length;
+                if (!Confirm("Delete " + candidates.Length + " highlighted history-based engraving/text features?")) return 0;
+
+                Session.UndoMarkId mark = context.Session.SetUndoMark(Session.MarkVisibility.Visible, "NX Refine - Remove Markings");
+                try
+                {
+                    context.Session.UpdateManager.AddObjectsToDeleteList(candidates);
+                    context.Session.UpdateManager.DoUpdate(mark);
+                    return candidates.Length;
+                }
+                catch
+                {
+                    context.Session.UndoToMark(mark, "NX Refine - Remove Markings");
+                    throw;
+                }
             }
-            catch
+            finally
             {
-                context.Session.UndoToMark(mark, "NX Refine - Remove Markings");
-                throw;
+                ClearFeatureHighlights(candidates);
             }
         }
 
@@ -169,6 +177,21 @@ namespace NXRefine.Repair
                 catch (NXException)
                 {
                     // A successfully deleted face no longer has a valid display object.
+                }
+            }
+        }
+
+        private static void ClearFeatureHighlights(IEnumerable<Feature> features)
+        {
+            foreach (Feature feature in features)
+            {
+                try
+                {
+                    feature.Unhighlight();
+                }
+                catch (NXException)
+                {
+                    // A successfully deleted feature no longer has a valid display object.
                 }
             }
         }
