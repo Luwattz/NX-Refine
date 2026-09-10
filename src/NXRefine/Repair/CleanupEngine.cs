@@ -88,27 +88,33 @@ namespace NXRefine.Repair
                 MessageBox.Show("No history-based engraving or text features were found. Dumb-solid marking recognition is planned for a later milestone.", "NX Refine", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return 0;
             }
-            foreach (Feature candidate in candidates) candidate.Highlight();
+            Face[] previewFaces = candidates.SelectMany(feature => feature.GetFaces())
+                .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
+            bool accepted;
             try
             {
-                if (!Confirm("Delete " + candidates.Length + " highlighted history-based engraving/text features?")) return 0;
-
-                Session.UndoMarkId mark = context.Session.SetUndoMark(Session.MarkVisibility.Visible, "NX Refine - Remove Markings");
-                try
-                {
-                    context.Session.UpdateManager.AddObjectsToDeleteList(candidates);
-                    context.Session.UpdateManager.DoUpdate(mark);
-                    return candidates.Length;
-                }
-                catch
-                {
-                    context.Session.UndoToMark(mark, "NX Refine - Remove Markings");
-                    throw;
-                }
+                foreach (Face face in previewFaces) face.Highlight();
+                context.UF.Disp.Refresh();
+                accepted = Confirm("Delete " + candidates.Length + " history-based engraving/text features? Their available faces are highlighted.");
             }
             finally
             {
                 ClearFeatureHighlights(candidates);
+                ClearHighlights(previewFaces);
+            }
+            if (!accepted) return 0;
+
+            Session.UndoMarkId mark = context.Session.SetUndoMark(Session.MarkVisibility.Visible, "NX Refine - Remove Markings");
+            try
+            {
+                context.Session.UpdateManager.AddObjectsToDeleteList(candidates);
+                context.Session.UpdateManager.DoUpdate(mark);
+                return candidates.Length;
+            }
+            catch
+            {
+                context.Session.UndoToMark(mark, "NX Refine - Remove Markings");
+                throw;
             }
         }
 
@@ -119,66 +125,71 @@ namespace NXRefine.Repair
                 MessageBox.Show("No matching candidates were found.", "NX Refine", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return 0;
             }
-            foreach (Face face in faces) face.Highlight();
+            bool accepted;
             try
             {
-                if (!Confirm(operation + " will process " + faces.Count + " highlighted faces. Continue?")) return 0;
-
-                Session.UndoMarkId mark = context.Session.SetUndoMark(Session.MarkVisibility.Visible, "NX Refine - " + operation);
-                int processed = 0;
-                try
-                {
-                    foreach (IGrouping<Body, Face> bodyFaces in faces.GroupBy(face => face.GetBody()))
-                    {
-                        DeleteFaceBuilder builder = null;
-                        try
-                        {
-                            Face[] group = bodyFaces.ToArray();
-                            builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
-                            builder.Type = type;
-                            builder.Heal = true;
-                            builder.UseHoleDiameter = type == DeleteFaceBuilder.SelectTypes.Hole;
-                            if (type == DeleteFaceBuilder.SelectTypes.Hole)
-                                builder.MaxHoleDiameter.RightHandSide = settings.MaxHoleDiameter.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                            if (type == DeleteFaceBuilder.SelectTypes.Blend)
-                                builder.MaxBlendRadius.RightHandSide = settings.MaxBlendRadius.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                            FaceDumbRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(group);
-                            builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
-                            builder.CommitFeature();
-                            processed += group.Length;
-                        }
-                        finally
-                        {
-                            if (builder != null) builder.Destroy();
-                        }
-                    }
-                    return processed;
-                }
-                catch
-                {
-                    context.Session.UndoToMark(mark, "NX Refine - " + operation);
-                    throw;
-                }
+                foreach (Face face in faces) face.Highlight();
+                context.UF.Disp.Refresh();
+                accepted = Confirm(operation + " will process " + faces.Count + " highlighted faces. Continue?");
             }
             finally
             {
                 ClearHighlights(faces);
             }
+            if (!accepted) return 0;
+
+            Session.UndoMarkId mark = context.Session.SetUndoMark(Session.MarkVisibility.Visible, "NX Refine - " + operation);
+            int processed = 0;
+            try
+            {
+                foreach (IGrouping<Body, Face> bodyFaces in faces.GroupBy(face => face.GetBody()))
+                {
+                    DeleteFaceBuilder builder = null;
+                    try
+                    {
+                        Face[] group = bodyFaces.ToArray();
+                        builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
+                        builder.Type = type;
+                        builder.Heal = true;
+                        builder.UseHoleDiameter = type == DeleteFaceBuilder.SelectTypes.Hole;
+                        if (type == DeleteFaceBuilder.SelectTypes.Hole)
+                            builder.MaxHoleDiameter.RightHandSide = settings.MaxHoleDiameter.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        if (type == DeleteFaceBuilder.SelectTypes.Blend)
+                            builder.MaxBlendRadius.RightHandSide = settings.MaxBlendRadius.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        FaceDumbRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(group);
+                        builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
+                        builder.CommitFeature();
+                        processed += group.Length;
+                    }
+                    finally
+                    {
+                        if (builder != null) builder.Destroy();
+                    }
+                }
+                return processed;
+            }
+            catch
+            {
+                context.Session.UndoToMark(mark, "NX Refine - " + operation);
+                throw;
+            }
         }
 
-        private static void ClearHighlights(IEnumerable<Face> faces)
+        private void ClearHighlights(IEnumerable<Face> faces)
         {
             foreach (Face face in faces)
             {
                 try
                 {
                     face.Unhighlight();
+                    context.UF.Disp.SetHighlight(face.Tag, 0);
                 }
                 catch (NXException)
                 {
                     // A successfully deleted face no longer has a valid display object.
                 }
             }
+            context.UF.Disp.Refresh();
         }
 
         private static void ClearFeatureHighlights(IEnumerable<Feature> features)
@@ -201,8 +212,9 @@ namespace NXRefine.Repair
             return !settings.ConfirmBeforeRepair || MessageBox.Show(
                 message + Environment.NewLine + Environment.NewLine + "The operation is protected by a single NX undo mark.",
                 "NX Refine",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning) == DialogResult.Yes;
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) == DialogResult.Yes;
         }
 
         private static bool IsEngravingFeature(Feature feature)

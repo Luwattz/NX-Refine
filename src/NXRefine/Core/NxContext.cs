@@ -21,8 +21,10 @@ namespace NXRefine.Core
         public NXOpen.UI UI { get; private set; }
         public Part WorkPart { get { return Session.Parts.Work; } }
 
-        public void Log(string message)
+        public void Log(string message, bool showWindow = false)
         {
+            Session.LogFile.WriteLine("[NX Refine] " + message);
+            if (!showWindow) return;
             ListingWindow window = Session.ListingWindow;
             if (!window.IsOpen) window.Open();
             window.WriteLine("[NX Refine] " + message);

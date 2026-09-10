@@ -92,7 +92,7 @@ deploy/
 6. Run **Analyze** again before exporting to a simulation system.
 
 All length values use the current part unit. Area values use the corresponding squared part unit.
-Candidate faces and history features are highlighted while a confirmation dialog is open and are unhighlighted on cancel, completion, or failure. Completion counts are written to the NX Listing Window without an additional information dialog.
+Candidate faces are highlighted while a repair confirmation dialog is open. Marking previews use the faces associated with the candidate history features. Closing the dialog clears the preview and refreshes the display before any deletion starts. No and Cancel (including Escape) leave geometry unchanged. Repair completion counts are written silently to the NX system log; repair completion and cancellation do not open the Listing Window. The Analyze command still opens its requested analysis report.
 
 ## Known limitations
 

@@ -75,9 +75,9 @@ namespace NXRefine
         private static void ShowAnalysis(NxContext context, GeometryAnalyzer analyzer)
         {
             IList<Issue> issues = analyzer.Analyze(true);
-            context.Log("Geometry analysis completed.");
+            context.Log("Geometry analysis completed.", true);
             foreach (IGrouping<IssueKind, Issue> group in issues.GroupBy(issue => issue.Kind).OrderBy(group => group.Key.ToString()))
-                context.Log(group.Key + ": " + group.Count());
+                context.Log(group.Key + ": " + group.Count(), true);
             MessageBox.Show(
                 issues.Count == 0 ? "No issues were found by the enabled checks." : issues.Count + " issue references were found and highlighted. See the Listing Window for the category summary.",
                 "NX Refine - Analysis",

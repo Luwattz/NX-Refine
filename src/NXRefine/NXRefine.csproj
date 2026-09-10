@@ -60,7 +60,7 @@
     <Compile Include="Repair\CleanupEngine.cs" />
     <Compile Include="UI\SettingsForm.cs" />
   </ItemGroup>
-  <Target Name="CopyToDeploy" AfterTargets="Build">
+  <Target Name="CopyToDeploy" AfterTargets="Build" Condition="'$(SkipDeploy)' != 'true'">
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="..\..\deploy\application" />
     <Copy SourceFiles="$(TargetDir)$(TargetName).pdb" DestinationFolder="..\..\deploy\application" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
   </Target>
