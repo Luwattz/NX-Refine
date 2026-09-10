@@ -1,0 +1,105 @@
+# NX Refine
+
+NX Refine is an open-source Siemens NX add-on for geometry validation, defeaturing, and simulation-oriented model cleanup. It adds a dedicated **Geometry Cleanup** ribbon tab to NX and wraps native NXOpen and UFUN operations in a preview-first workflow.
+
+> Status: early functional prototype targeting Siemens NX 2312 on Windows. Always work on a copy of production geometry and validate repaired bodies before downstream use.
+
+## Ribbon commands
+
+| Group | Command | Current behavior |
+|---|---|---|
+| Inspect | Analyze | Runs NX Examine Geometry checks, detects short edges, small faces, small blends, and cylindrical hole candidates, then highlights findings. |
+| Simplify | Auto Simplify | Runs small-blend, small-hole, and small-face cleanup in sequence. |
+| Simplify | Small Faces | Deletes configured small-face candidates by body and asks NX to heal the result. |
+| Simplify | Remove Blends | Recognizes blend faces and removes those with radius at or below the configured threshold. |
+| Simplify | Fill Holes | Finds cylindrical candidates below the configured diameter and invokes NX hole deletion/healing. |
+| Simplify | Remove Markings | Removes history-based text, engraving, emboss, and marking features. Dumb-solid engraving recognition is not implemented yet. |
+| Repair | Repair Sheets | Sews sheet bodies with the configured tolerance and optimizes output faces. |
+| Repair | Patch Openings | Detects and highlights open sheet boundaries. Automatic surface reconstruction is preview-only in v0.1. |
+| NX Refine | Settings | Configures face area, edge length, radius, diameter, sewing tolerance, and sharp-angle thresholds. |
+| NX Refine | About | Shows version and safety information. |
+
+## Checks
+
+The analyzer enables the native NX checks for:
+
+- tiny and misaligned objects;
+- body data structures and consistency;
+- face-to-face and face self-intersections;
+- sheet boundaries and missing-face indicators;
+- face smoothness, spikes, and cuts;
+- edge smoothness and edge tolerances.
+
+Additional configurable heuristics identify small-area faces, short edges, blend faces, and cylindrical hole candidates.
+
+## Requirements
+
+- Windows x64
+- Siemens NX 2312 for the supplied build defaults
+- NXOpen .NET assemblies from the target NX installation
+- .NET Framework 4.x build tools or Visual Studio 2022
+- Appropriate Siemens NX licenses for the modeling commands used
+
+Other recent NX releases can be targeted by passing their installation directory during the build. NXOpen binary compatibility is release-dependent; build the DLL against the deployment release.
+
+## Build
+
+Open PowerShell in the repository and run:
+
+```powershell
+.\scripts\build.ps1 -Configuration Release -NXInstallDir "C:\Program Files\Siemens\NX2312"
+```
+
+The build copies `NXRefine.dll` to `deploy\application`.
+
+## Install the ribbon
+
+NX loads custom applications from directories listed in the file referenced by `UGII_CUSTOM_DIRECTORY_FILE`.
+
+1. Build the project.
+2. Add the absolute `deploy` directory to your NX custom directory file, one directory per line. `deploy\custom_dirs.dat.example` shows the expected format.
+3. Alternatively run:
+
+   ```powershell
+   .\scripts\install-local.ps1 -CustomDirectoryFile "C:\NXCustom\custom_dirs.dat"
+   ```
+
+4. Set `UGII_CUSTOM_DIRECTORY_FILE` to that file if your NX environment does not already define it.
+5. Restart NX and enter the Modeling application.
+6. If the tab is hidden by the active role, right-click the ribbon and enable **Geometry Cleanup**.
+
+The deployment layout follows the standard NX custom application convention:
+
+```text
+deploy/
+├── application/
+│   └── NXRefine.dll
+└── startup/
+    ├── nxrefine_main.rtb
+    └── nxrefine_*.tbr
+```
+
+## Usage
+
+1. Open a part and save a disposable copy.
+2. Choose **Geometry Cleanup > Analyze**.
+3. Review highlighted entities and the NX Listing Window summary.
+4. Adjust thresholds in **Settings**.
+5. Run one focused repair at a time and inspect the result.
+6. Run **Analyze** again before exporting to a simulation system.
+
+All length values use the current part unit. Area values use the corresponding squared part unit.
+
+## Known limitations
+
+- A cylindrical face is only a hole candidate; imported bosses and partial cylinders can require manual review.
+- Small-face deletion is heuristic and may fail when adjacent surfaces cannot be extended safely.
+- `Repair Sheets` currently operates on all sheet bodies in the work part.
+- Arbitrary cavity removal, patterned-face replacement, and missing-face surface reconstruction require topology-aware algorithms planned for later releases.
+- The project does not redistribute Siemens NX assemblies or documentation.
+
+See [Architecture](docs/ARCHITECTURE.md) for implementation details and the roadmap.
+
+## License
+
+NX Refine is licensed under the [MIT License](LICENSE). Siemens and NX are trademarks of Siemens AG. This project is independent and is not affiliated with or endorsed by Siemens.

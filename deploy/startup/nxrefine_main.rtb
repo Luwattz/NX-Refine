@@ -1,0 +1,9 @@
+! NX Refine ribbon tab
+TITLE Geometry Cleanup
+VERSION 170
+
+GROUP nxrefine_inspect.tbr
+GROUP nxrefine_simplify.tbr
+GROUP nxrefine_repair.tbr
+GROUP nxrefine_support.tbr
+

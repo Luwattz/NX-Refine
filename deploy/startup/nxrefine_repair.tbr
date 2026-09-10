@@ -1,0 +1,13 @@
+TITLE Repair
+VERSION 170
+
+BUTTON NX_REFINE_REPAIR_SHEETS
+LABEL Repair Sheets
+BITMAP sew
+ACTIONS NXRefine("repair-sheets")
+
+BUTTON NX_REFINE_PATCH_OPENINGS
+LABEL Patch Openings
+BITMAP bounded_plane
+ACTIONS NXRefine("patch-openings")
+

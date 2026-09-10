@@ -1,0 +1,8 @@
+TITLE Inspect
+VERSION 170
+
+BUTTON NX_REFINE_ANALYZE
+LABEL Analyze
+BITMAP checkgreen
+ACTIONS NXRefine("analyze")
+

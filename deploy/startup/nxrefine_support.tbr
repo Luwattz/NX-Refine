@@ -1,0 +1,13 @@
+TITLE NX Refine
+VERSION 170
+
+BUTTON NX_REFINE_SETTINGS
+LABEL Settings
+BITMAP preferences
+ACTIONS NXRefine("settings")
+
+BUTTON NX_REFINE_ABOUT
+LABEL About
+BITMAP info
+ACTIONS NXRefine("about")
+

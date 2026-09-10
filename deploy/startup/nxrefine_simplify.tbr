@@ -1,0 +1,28 @@
+TITLE Simplify
+VERSION 170
+
+BUTTON NX_REFINE_SIMPLIFY
+LABEL Auto Simplify
+BITMAP optimize
+ACTIONS NXRefine("simplify")
+
+BUTTON NX_REFINE_REMOVE_SMALL
+LABEL Small Faces
+BITMAP delete
+ACTIONS NXRefine("remove-small")
+
+BUTTON NX_REFINE_REMOVE_BLENDS
+LABEL Remove Blends
+BITMAP edge_blend
+ACTIONS NXRefine("remove-blends")
+
+BUTTON NX_REFINE_FILL_HOLES
+LABEL Fill Holes
+BITMAP hole
+ACTIONS NXRefine("fill-holes")
+
+BUTTON NX_REFINE_REMOVE_MARKINGS
+LABEL Remove Markings
+BITMAP text
+ACTIONS NXRefine("remove-markings")
+

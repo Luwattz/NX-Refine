@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <NXInstallDir Condition="'$(NXInstallDir)' == '' and '$(UGII_BASE_DIR)' != ''">$(UGII_BASE_DIR)</NXInstallDir>
+    <NXInstallDir Condition="'$(NXInstallDir)' == ''">C:\Program Files\Siemens\NX2312</NXInstallDir>
+    <NXManagedDir>$(NXInstallDir)\NXBIN\managed</NXManagedDir>
+  </PropertyGroup>
+</Project>
+
