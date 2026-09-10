@@ -88,14 +88,21 @@ namespace NXRefine.Repair
                 MessageBox.Show("No history-based engraving or text features were found. Dumb-solid marking recognition is planned for a later milestone.", "NX Refine", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return 0;
             }
-            Face[] previewFaces = candidates.SelectMany(feature => feature.GetFaces())
-                .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
+            Face[] previewFaces = FindMarkingPreviewFaces(candidates);
+            if (previewFaces.Length == 0)
+            {
+                MessageBox.Show("No current marking faces could be resolved for preview. No features were deleted.",
+                    "NX Refine", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return 0;
+            }
             bool accepted;
             try
             {
-                foreach (Face face in previewFaces) face.Highlight();
                 context.UF.Disp.Refresh();
-                accepted = Confirm("Delete " + candidates.Length + " history-based engraving/text features? Their available faces are highlighted.");
+                foreach (Face face in previewFaces) context.UF.Disp.SetHighlight(face.Tag, 1);
+                context.WorkPart.ModelingViews.WorkView.UpdateDisplay();
+                accepted = Confirm("Delete " + candidates.Length + " history-based engraving/text features? " +
+                    previewFaces.Length + " related faces are highlighted, including dependent geometry where needed.");
             }
             finally
             {
@@ -116,6 +123,31 @@ namespace NXRefine.Repair
                 context.Session.UndoToMark(mark, "NX Refine - Remove Markings");
                 throw;
             }
+        }
+
+        private Face[] FindMarkingPreviewFaces(IEnumerable<Feature> roots)
+        {
+            // Text often owns curves only; its first solid-producing children own the lettering faces.
+            // Stop at those producers instead of traversing subsequent whole-body edits.
+            var currentFaces = context.WorkPart.Bodies.ToArray().SelectMany(body => body.GetFaces())
+                .ToDictionary(face => face.Tag);
+            var found = new Dictionary<Tag, Face>();
+            var visited = new HashSet<Tag>();
+            var pending = new Queue<Feature>(roots);
+            while (pending.Count > 0)
+            {
+                Feature feature = pending.Dequeue();
+                if (!visited.Add(feature.Tag)) continue;
+                Face[] owned = feature.GetFaces();
+                context.Log("Marking preview: " + feature.FeatureType + " / " + feature.Name +
+                    " owns " + owned.Length + " faces.");
+                foreach (Face face in owned)
+                    if (currentFaces.ContainsKey(face.Tag)) found[face.Tag] = currentFaces[face.Tag];
+                if (owned.Length > 0) continue;
+                foreach (Feature child in feature.GetChildren()) pending.Enqueue(child);
+            }
+            context.Log("Marking preview resolved " + found.Count + " current faces.");
+            return found.Values.ToArray();
         }
 
         private int DeleteFacesByBody(IList<Face> faces, DeleteFaceBuilder.SelectTypes type, string operation)
