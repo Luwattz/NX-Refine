@@ -112,42 +112,64 @@ namespace NXRefine.Repair
                 return 0;
             }
             foreach (Face face in faces) face.Highlight();
-            if (!Confirm(operation + " will process " + faces.Count + " highlighted faces. Continue?")) return 0;
-
-            Session.UndoMarkId mark = context.Session.SetUndoMark(Session.MarkVisibility.Visible, "NX Refine - " + operation);
-            int processed = 0;
             try
             {
-                foreach (IGrouping<Body, Face> bodyFaces in faces.GroupBy(face => face.GetBody()))
+                if (!Confirm(operation + " will process " + faces.Count + " highlighted faces. Continue?")) return 0;
+
+                Session.UndoMarkId mark = context.Session.SetUndoMark(Session.MarkVisibility.Visible, "NX Refine - " + operation);
+                int processed = 0;
+                try
                 {
-                    DeleteFaceBuilder builder = null;
-                    try
+                    foreach (IGrouping<Body, Face> bodyFaces in faces.GroupBy(face => face.GetBody()))
                     {
-                        Face[] group = bodyFaces.ToArray();
-                        builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
-                        builder.Type = type;
-                        builder.Heal = true;
-                        builder.UseHoleDiameter = type == DeleteFaceBuilder.SelectTypes.Hole;
-                        if (type == DeleteFaceBuilder.SelectTypes.Hole)
-                            builder.MaxHoleDiameter.RightHandSide = settings.MaxHoleDiameter.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                        if (type == DeleteFaceBuilder.SelectTypes.Blend)
-                            builder.MaxBlendRadius.RightHandSide = settings.MaxBlendRadius.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                        FaceDumbRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(group);
-                        builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
-                        builder.CommitFeature();
-                        processed += group.Length;
+                        DeleteFaceBuilder builder = null;
+                        try
+                        {
+                            Face[] group = bodyFaces.ToArray();
+                            builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
+                            builder.Type = type;
+                            builder.Heal = true;
+                            builder.UseHoleDiameter = type == DeleteFaceBuilder.SelectTypes.Hole;
+                            if (type == DeleteFaceBuilder.SelectTypes.Hole)
+                                builder.MaxHoleDiameter.RightHandSide = settings.MaxHoleDiameter.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            if (type == DeleteFaceBuilder.SelectTypes.Blend)
+                                builder.MaxBlendRadius.RightHandSide = settings.MaxBlendRadius.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            FaceDumbRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(group);
+                            builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
+                            builder.CommitFeature();
+                            processed += group.Length;
+                        }
+                        finally
+                        {
+                            if (builder != null) builder.Destroy();
+                        }
                     }
-                    finally
-                    {
-                        if (builder != null) builder.Destroy();
-                    }
+                    return processed;
                 }
-                return processed;
+                catch
+                {
+                    context.Session.UndoToMark(mark, "NX Refine - " + operation);
+                    throw;
+                }
             }
-            catch
+            finally
             {
-                context.Session.UndoToMark(mark, "NX Refine - " + operation);
-                throw;
+                ClearHighlights(faces);
+            }
+        }
+
+        private static void ClearHighlights(IEnumerable<Face> faces)
+        {
+            foreach (Face face in faces)
+            {
+                try
+                {
+                    face.Unhighlight();
+                }
+                catch (NXException)
+                {
+                    // A successfully deleted face no longer has a valid display object.
+                }
             }
         }
 
