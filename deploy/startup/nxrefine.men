@@ -1,0 +1,72 @@
+VERSION 120
+
+EDIT UG_GATEWAY_MAIN_MENUBAR
+
+MENU NX_REFINE_MENU
+
+BUTTON NX_REFINE_ANALYZE
+LABEL Analyze
+MESSAGE Analyze the work part for geometry quality issues.
+BITMAP checkgreen
+ACTIONS NXRefine.Analyze.dll
+
+BUTTON NX_REFINE_SIMPLIFY
+LABEL Auto Simplify
+MESSAGE Remove configured small blends, holes, and faces.
+BITMAP optimize
+ACTIONS NXRefine.AutoSimplify.dll
+
+BUTTON NX_REFINE_REMOVE_SMALL
+LABEL Small Faces
+MESSAGE Remove configured small faces and heal the body.
+BITMAP delete
+ACTIONS NXRefine.SmallFaces.dll
+
+BUTTON NX_REFINE_REMOVE_BLENDS
+LABEL Remove Blends
+MESSAGE Remove blends at or below the configured radius.
+BITMAP edge_blend
+ACTIONS NXRefine.RemoveBlends.dll
+
+BUTTON NX_REFINE_FILL_HOLES
+LABEL Fill Holes
+MESSAGE Fill cylindrical hole candidates below the configured diameter.
+BITMAP hole
+ACTIONS NXRefine.FillHoles.dll
+
+BUTTON NX_REFINE_REMOVE_MARKINGS
+LABEL Remove Markings
+MESSAGE Remove history-based text, engraving, and emboss features.
+BITMAP text
+ACTIONS NXRefine.RemoveMarkings.dll
+
+BUTTON NX_REFINE_REPAIR_SHEETS
+LABEL Repair Sheets
+MESSAGE Sew sheet bodies using the configured tolerance.
+BITMAP sew
+ACTIONS NXRefine.RepairSheets.dll
+
+BUTTON NX_REFINE_PATCH_OPENINGS
+LABEL Patch Openings
+MESSAGE Detect and highlight open sheet boundaries.
+BITMAP bounded_plane
+ACTIONS NXRefine.PatchOpenings.dll
+
+BUTTON NX_REFINE_SETTINGS
+LABEL Settings
+MESSAGE Configure cleanup thresholds and tolerances.
+BITMAP preferences
+ACTIONS NXRefine.Settings.dll
+
+BUTTON NX_REFINE_ABOUT
+LABEL About
+MESSAGE Show NX Refine version and safety information.
+BITMAP info
+ACTIONS NXRefine.About.dll
+
+END_OF_MENU
+
+BEFORE UG_HELP
+    CASCADE_BUTTON NX_REFINE_MENU
+    LABEL NX Refine
+END_OF_BEFORE

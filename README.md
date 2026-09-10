@@ -56,6 +56,8 @@ The build copies `NXRefine.dll` to `deploy\application`.
 
 NX loads custom applications from directories listed in the file referenced by `UGII_CUSTOM_DIRECTORY_FILE`.
 
+See [Installing on Siemens NX 2312](docs/INSTALL_NX2312.md) for the complete build, registration, verification, and uninstall procedure.
+
 1. Build the project.
 2. Add the absolute `deploy` directory to your NX custom directory file, one directory per line. `deploy\custom_dirs.dat.example` shows the expected format.
 3. Alternatively run:
@@ -73,10 +75,11 @@ The deployment layout follows the standard NX custom application convention:
 ```text
 deploy/
 ├── application/
-│   └── NXRefine.dll
+│   ├── NXRefine.dll
+│   └── NXRefine.*.dll
 └── startup/
-    ├── nxrefine_main.rtb
-    └── nxrefine_*.tbr
+    ├── nxrefine.men
+    └── nxrefine_main.rtb
 ```
 
 ## Usage

@@ -17,4 +17,22 @@ if (-not (Test-Path -LiteralPath $msbuild)) {
 & $msbuild "$repositoryRoot\NXRefine.sln" /t:Rebuild /p:Configuration=$Configuration /p:NXInstallDir="$NXInstallDir" /m
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "Built NXRefine.dll and copied it to deploy\application."
+$commands = @(
+    "Analyze",
+    "AutoSimplify",
+    "SmallFaces",
+    "RemoveBlends",
+    "FillHoles",
+    "RemoveMarkings",
+    "RepairSheets",
+    "PatchOpenings",
+    "Settings",
+    "About"
+)
+$commandProject = Join-Path $repositoryRoot "src\NXRefine.Command\NXRefine.Command.csproj"
+foreach ($command in $commands) {
+    & $msbuild $commandProject /t:Rebuild /p:Configuration=$Configuration /p:NXInstallDir="$NXInstallDir" /p:AssemblyName="NXRefine.$command" /m
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
+Write-Host "Built NXRefine.dll, command entry points, and copied them to deploy\application."

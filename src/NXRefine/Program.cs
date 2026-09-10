@@ -14,8 +14,12 @@ namespace NXRefine
     {
         public static void Main(string[] args)
         {
+            Run(ResolveCommand(args));
+        }
+
+        public static void Run(string command)
+        {
             NxContext context = NxContext.Current;
-            string command = ResolveCommand(args);
             try
             {
                 CleanupSettings settings = CleanupSettings.Load();

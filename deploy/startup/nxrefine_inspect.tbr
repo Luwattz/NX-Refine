@@ -1,8 +1,2 @@
-TITLE Inspect
-VERSION 170
-
-BUTTON NX_REFINE_ANALYZE
-LABEL Analyze
-BITMAP checkgreen
-ACTIONS NXRefine("analyze")
-
+! Retained as an empty compatibility placeholder.
+! NX 2312 loads the ribbon from nxrefine_main.rtb.

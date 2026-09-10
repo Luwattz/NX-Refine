@@ -1,13 +1,2 @@
-TITLE NX Refine
-VERSION 170
-
-BUTTON NX_REFINE_SETTINGS
-LABEL Settings
-BITMAP preferences
-ACTIONS NXRefine("settings")
-
-BUTTON NX_REFINE_ABOUT
-LABEL About
-BITMAP info
-ACTIONS NXRefine("about")
-
+! Retained as an empty compatibility placeholder.
+! NX 2312 loads the ribbon from nxrefine_main.rtb.
