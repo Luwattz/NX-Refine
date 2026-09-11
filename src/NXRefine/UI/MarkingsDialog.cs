@@ -16,8 +16,9 @@ namespace NXRefine.UI
     {
         private readonly NxContext context;
         private readonly BlockDialog dialog;
-        private SelectObject carrierSelect, keptSelect;
-        private DoubleBlock limit;
+        private SelectObject carrierSelect;
+        private FaceCollector keptSelect;
+        private DoubleBlock limit, minHeight, maxHeight;
         private NXOpen.BlockStyler.Label status;
         private Body body;
         private Face carrier;
@@ -56,17 +57,25 @@ namespace NXRefine.UI
         private void Initialize()
         {
             carrierSelect = (SelectObject)dialog.TopBlock.FindBlock("carrier");
-            keptSelect = (SelectObject)dialog.TopBlock.FindBlock("faces");
+            keptSelect = (FaceCollector)dialog.TopBlock.FindBlock("faces");
             limit = (DoubleBlock)dialog.TopBlock.FindBlock("limit");
+            minHeight = (DoubleBlock)dialog.TopBlock.FindBlock("minHeight");
+            maxHeight = (DoubleBlock)dialog.TopBlock.FindBlock("maxHeight");
             status = (NXOpen.BlockStyler.Label)dialog.TopBlock.FindBlock("status");
             var mask = new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_ANY_FACE);
-            foreach (SelectObject select in new[] { carrierSelect, keptSelect })
-            {
-                select.SetSelectionFilter(Selection.SelectionAction.ClearAndEnableSpecific, new[] { mask });
-                select.MaximumScopeAsString = "Within Work Part Only";
-            }
+            carrierSelect.SetSelectionFilter(Selection.SelectionAction.ClearAndEnableSpecific, new[] { mask });
+            carrierSelect.MaximumScopeAsString = "Within Work Part Only";
+            keptSelect.EntityType = 16; // Faces
+            keptSelect.MaximumScopeAsString = "Within Work Part Only";
+            // Keep the native NX selection-intent menu on the deletion collector
+            // focused on the same rule used by the scanner: one click represents
+            // all faces belonging to a boss or pocket (including a connected
+            // character), rather than a single face at a time.
+            keptSelect.FaceRules = 2048; // Boss and Pocket Faces
+            keptSelect.DefaultFaceRulesAsString = "Boss and Pocket Faces";
+            keptSelect.PopupMenuEnabled = true;
             ready = true;
-            status.Label = "Select the lettering carrier face (its body is the search scope).";
+            status.Label = "Select the lettering carrier face (its body is the search scope). Connected boss and pocket faces within the height limits will be highlighted.";
         }
 
         private int Update(UIBlock block)
@@ -75,7 +84,7 @@ namespace NXRefine.UI
             try
             {
                 updating = true;
-                if (block == carrierSelect || block == limit || block.Name == "find")
+                if (block == carrierSelect || block == limit || block == minHeight || block == maxHeight || block.Name == "find")
                 {
                     ClearPreview();
                     keptSelect.SetSelectedObjects(new TaggedObject[0]);
@@ -97,8 +106,9 @@ namespace NXRefine.UI
                         .SelectMany(g => g).Cast<TaggedObject>().ToArray());
                 }
                 Preview();
-                status.Label = groups.Count + " candidate groups; " + keptSelect.GetSelectedObjects().Length +
-                    " faces retained. Review bosses and holes before Apply.";
+                status.Label = groups.Count + " connected boss/pocket groups; " + keptSelect.GetSelectedObjects().Length +
+                    " faces retained. Height " + minHeight.Value.ToString("0.###") + "-" + maxHeight.Value.ToString("0.###") +
+                    ". Review bosses and holes before Apply.";
                 return 0;
             }
             catch (Exception ex) { return Error(ex); }
@@ -134,6 +144,12 @@ namespace NXRefine.UI
         {
             if (limit.Value <= 0 || double.IsNaN(limit.Value) || double.IsInfinity(limit.Value))
                 throw new InvalidOperationException("Maximum group diagonal must be positive.");
+            if (minHeight.Value < 0 || double.IsNaN(minHeight.Value) || double.IsInfinity(minHeight.Value))
+                throw new InvalidOperationException("Minimum feature height must be zero or positive.");
+            if (maxHeight.Value <= 0 || double.IsNaN(maxHeight.Value) || double.IsInfinity(maxHeight.Value))
+                throw new InvalidOperationException("Maximum feature height must be positive.");
+            if (minHeight.Value > maxHeight.Value)
+                throw new InvalidOperationException("Minimum feature height cannot exceed the maximum feature height.");
             var faces = body.GetFaces().Where(f => f.Tag != carrier.Tag).ToDictionary(f => f.Tag);
             var adjacency = faces.Keys.ToDictionary(tag => tag, tag => new HashSet<Tag>());
             var boundary = new HashSet<Tag>();
@@ -152,20 +168,110 @@ namespace NXRefine.UI
             foreach (Tag seed in boundary)
             {
                 if (seen.Contains(seed)) continue;
-                var component = new List<Face>();
-                var queue = new Queue<Tag>();
-                queue.Enqueue(seed);
-                seen.Add(seed);
-                while (queue.Count > 0)
-                {
-                    Tag tag = queue.Dequeue();
-                    component.Add(faces[tag]);
-                    foreach (Tag next in adjacency[tag]) if (seen.Add(next)) queue.Enqueue(next);
-                }
+                Face[] component = ResolveBossPocketFaces(faces[seed], faces);
+                // Imported or damaged geometry may not be recognized by NX's
+                // boss/pocket intent rule. Preserve the topology-only fallback
+                // so the command still finds connected marking islands.
+                if (component == null || component.Length < 2)
+                    component = ConnectedComponent(seed, faces, adjacency);
+                if (component.Length == 0 || component.Any(face => seen.Contains(face.Tag)))
+                    continue;
+                foreach (Face face in component) seen.Add(face.Tag);
                 double diagonal = Diagonal(component);
-                if (diagonal <= limit.Value && component.Count < faces.Count)
-                    groups.Add(component.ToArray());
+                double height = FeatureHeight(component);
+                if (diagonal <= limit.Value && height >= minHeight.Value && height <= maxHeight.Value && component.Length < faces.Count)
+                    groups.Add(component);
             }
+        }
+
+        private Face[] ResolveBossPocketFaces(Face seed, IDictionary<Tag, Face> bodyFaces)
+        {
+            ScCollector collector = null;
+            try
+            {
+                collector = context.WorkPart.ScCollectors.CreateCollector();
+                SelectionIntentRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceBossPocket(seed);
+                collector.ReplaceRules(new[] { rule }, false);
+                return (collector.GetObjects() ?? new DisplayableObject[0]).OfType<Face>()
+                    .Where(face => bodyFaces.ContainsKey(face.Tag))
+                    .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
+            }
+            catch (NXException)
+            {
+                return null;
+            }
+            finally
+            {
+                if (collector != null)
+                    try { collector.Destroy(); } catch (NXException) { }
+            }
+        }
+
+        private Face[] ConnectedComponent(Tag seed, IDictionary<Tag, Face> faces, IDictionary<Tag, HashSet<Tag>> adjacency)
+        {
+            var component = new List<Face>();
+            var queue = new Queue<Tag>();
+            var visited = new HashSet<Tag>();
+            queue.Enqueue(seed);
+            while (queue.Count > 0)
+            {
+                Tag tag = queue.Dequeue();
+                if (!visited.Add(tag) || !faces.ContainsKey(tag)) continue;
+                component.Add(faces[tag]);
+                foreach (Tag next in adjacency[tag])
+                    if (!visited.Contains(next)) queue.Enqueue(next);
+            }
+            return component.ToArray();
+        }
+
+        private double FeatureHeight(IEnumerable<Face> faces)
+        {
+            // The selected carrier supplies the reference normal. Projecting
+            // each candidate's WCS bounding box onto that normal gives a stable
+            // boss/cavity height for planar and mildly curved carrier faces,
+            // without depending on a particular modeling feature history.
+            double[] point = new double[3];
+            double[] normal = new double[3];
+            double[] carrierBox = new double[6];
+            int type;
+            double radius;
+            double radialData;
+            int normDirection;
+            context.UF.Modl.AskFaceData(carrier.Tag, out type, point, normal, carrierBox,
+                out radius, out radialData, out normDirection);
+            double normalLength = Math.Sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+            if (normalLength < 1e-9)
+            {
+                normal[0] = 0;
+                normal[1] = 0;
+                normal[2] = 1;
+                normalLength = 1;
+            }
+            for (int i = 0; i < 3; i++) normal[i] /= normalLength;
+            double carrierProjection = Dot(point, normal);
+            double low = double.MaxValue;
+            double high = double.MinValue;
+            foreach (Face face in faces)
+            {
+                var box = new double[6];
+                context.UF.Modl.AskBoundingBox(face.Tag, box);
+                double center = 0;
+                double radiusOnNormal = 0;
+                for (int i = 0; i < 3; i++)
+                {
+                    center += normal[i] * (box[i] + box[i + 3]) * 0.5;
+                    radiusOnNormal += Math.Abs(normal[i]) * (box[i + 3] - box[i]) * 0.5;
+                }
+                low = Math.Min(low, center - radiusOnNormal);
+                high = Math.Max(high, center + radiusOnNormal);
+            }
+            if (low == double.MaxValue || high == double.MinValue) return double.PositiveInfinity;
+            return Math.Max(Math.Abs(low - carrierProjection), Math.Abs(high - carrierProjection));
+        }
+
+        private static double Dot(double[] left, double[] right)
+        {
+            return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
         }
 
         private double Diagonal(IEnumerable<Face> faces)
