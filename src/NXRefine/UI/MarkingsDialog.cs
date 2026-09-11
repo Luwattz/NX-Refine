@@ -24,6 +24,7 @@ namespace NXRefine.UI
         private Face carrier;
         private readonly List<Face[]> groups = new List<Face[]>();
         private readonly HashSet<Tag> retained = new HashSet<Tag>();
+        private double activeMaxHeight = 2.0;
         private bool updating;
         private bool ready;
 
@@ -79,6 +80,7 @@ namespace NXRefine.UI
             // single height control explicitly so it cannot inherit the old
             // 20-unit group-diagonal value.
             maxHeight.Value = 2.0;
+            activeMaxHeight = 2.0;
             ready = true;
             status.Label = "Select the lettering carrier face (its body is the search scope). Connected boss and pocket faces within the height limits will be highlighted.";
         }
@@ -97,6 +99,12 @@ namespace NXRefine.UI
                 // than merely repainting the previous candidate list.
                 if (blockName == "carrier" || blockName == "maxHeight" || blockName == "find")
                 {
+                    // During VALUE_CHANGED NX 2312 can return the previous value
+                    // from DoubleBlock.Value even though the native control is
+                    // already displaying the new value. Query the event block's
+                    // live property list instead and keep one committed value for
+                    // scanning, status text, preview, and deletion.
+                    activeMaxHeight = ReadMaximumHeight(blockName == "maxHeight" ? block : maxHeight);
                     ClearPreview();
                     keptSelect.SetSelectedObjects(new TaggedObject[0]);
                     groups.Clear();
@@ -107,7 +115,7 @@ namespace NXRefine.UI
                     body = carrier.GetBody();
                     if (carrier.IsOccurrence || !body.IsSolidBody)
                         throw new InvalidOperationException("Select a solid-body face in the work part.");
-                    Scan();
+                    Scan(activeMaxHeight);
                     foreach (Face face in groups.SelectMany(group => group)) retained.Add(face.Tag);
                     SyncCollector();
                 }
@@ -122,7 +130,7 @@ namespace NXRefine.UI
                 }
                 Preview();
                 status.Label = RetainedGroupCount() + " connected boss/pocket groups; " + retained.Count +
-                    " faces retained. Maximum height " + maxHeight.Value.ToString("0.###") +
+                    " faces retained. Maximum height " + activeMaxHeight.ToString("0.###") +
                     ". Review bosses and holes before Apply.";
                 return 0;
             }
@@ -156,9 +164,19 @@ namespace NXRefine.UI
             return 0;
         }
 
-        private void Scan()
+        private double ReadMaximumHeight(UIBlock source)
         {
-            if (maxHeight.Value <= 0 || double.IsNaN(maxHeight.Value) || double.IsInfinity(maxHeight.Value))
+            if (source != null)
+            {
+                try { return source.GetProperties().GetDouble("Value"); }
+                catch (NXException) { }
+            }
+            return maxHeight.Value;
+        }
+
+        private void Scan(double maximumHeight)
+        {
+            if (maximumHeight <= 0 || double.IsNaN(maximumHeight) || double.IsInfinity(maximumHeight))
                 throw new InvalidOperationException("Maximum feature height must be positive.");
             var faces = body.GetFaces().Where(f => f.Tag != carrier.Tag).ToDictionary(f => f.Tag);
             var adjacency = faces.Keys.ToDictionary(tag => tag, tag => new HashSet<Tag>());
@@ -189,16 +207,16 @@ namespace NXRefine.UI
                 if (component.Length == 0) continue;
                 foreach (Face face in component) seen.Add(face.Tag);
                 double height = FeatureHeight(component);
-                double heightTolerance = Math.Max(1e-6, maxHeight.Value * 1e-6);
-                if (height <= maxHeight.Value + heightTolerance && component.Length < faces.Count)
+                double heightTolerance = Math.Max(1e-6, maximumHeight * 1e-6);
+                if (height <= maximumHeight + heightTolerance && component.Length < faces.Count)
                 {
                     groups.Add(component);
                     acceptedHeights.Add(height);
                 }
-                else if (height > maxHeight.Value)
+                else if (height > maximumHeight)
                     rejectedByHeight++;
             }
-            context.Log("Remove Markings scan: max height " + maxHeight.Value.ToString("0.###") +
+            context.Log("Remove Markings scan: max height " + maximumHeight.ToString("0.###") +
                 ", accepted topology groups " + acceptedHeights.Count +
                 (acceptedHeights.Count == 0 ? string.Empty :
                     ", measured heights " + string.Join(", ", acceptedHeights.Select(value => value.ToString("0.###")))) +
@@ -328,10 +346,12 @@ namespace NXRefine.UI
 
         private void KeyboardFocusChanged(UIBlock block, bool isFocus)
         {
-            // Numeric controls have a separate keyboard-focus notification.
-            // Repainting here covers the common workflow of editing the height
-            // and then moving back to the face collector.
-            if (isFocus && ready && !updating) Preview();
+            if (!ready || updating) return;
+            // Leaving the numeric field is a second, post-commit notification in
+            // NX 2312. Rescan here as a fallback for builds where VALUE_CHANGED
+            // exposes the old DoubleBlock.Value during the update callback.
+            if (!isFocus && block != null && block.Name == "maxHeight") Update(maxHeight);
+            else if (isFocus) Preview();
         }
 
         private void Preview()
