@@ -13,7 +13,7 @@ NX Refine is an open-source Siemens NX add-on for geometry validation, defeaturi
 | Simplify | Small Faces | Deletes configured small-face candidates by body and asks NX to heal the result. |
 | Simplify | Remove Blends | Recognizes blend faces and removes those with radius at or below the configured threshold. |
 | Simplify | Fill Holes | Finds cylindrical candidates below the configured diameter and invokes NX hole deletion/healing. |
-| Simplify | Remove Markings | Removes history-based text, engraving, emboss, and marking features. Dumb-solid engraving recognition is not implemented yet. |
+| Simplify | Remove Markings | Select a body and carrier face, find small connected geometry groups, exclude groups, then Apply or OK to delete and heal checked faces. Works without feature history; candidates require review. |
 | Repair | Repair Sheets | Sews sheet bodies with the configured tolerance and optimizes output faces. |
 | Repair | Patch Openings | Detects and highlights open sheet boundaries. Automatic surface reconstruction is preview-only in v0.1. |
 | NX Refine | Settings | Configures face area, edge length, radius, diameter, sewing tolerance, and sharp-angle thresholds. |
@@ -92,7 +92,16 @@ deploy/
 6. Run **Analyze** again before exporting to a simulation system.
 
 All length values use the current part unit. Area values use the corresponding squared part unit.
-Candidate faces are highlighted while a repair confirmation dialog is open. Marking previews use the faces associated with the candidate history features. Closing the dialog clears the preview and refreshes the display before any deletion starts. No and Cancel (including Escape) leave geometry unchanged. Repair completion counts are written silently to the NX system log; repair completion and cancellation do not open the Listing Window. The Analyze command still opens its requested analysis report.
+Candidate faces are highlighted during repair preview. Closing a confirmation dialog clears the preview before deletion starts. Repair completion counts are written silently to the NX system log; repair completion and cancellation do not open the Listing Window. The Analyze command still opens its requested analysis report.
+
+### Remove Markings workflow
+
+1. Click **Select Body / Face**. Select a solid body, then its large lettering carrier face. Selecting the carrier face directly also selects its body.
+2. Candidates are scanned automatically. Adjust **Max group diagonal** (current part units) and click **Find Candidates** to rescan.
+3. Checked groups are highlighted. Uncheck a group in the list, or use **Pick Groups to Exclude** and pick any face in the group in NX. Repeat for other groups, then cancel the NX picker to return to the review window.
+4. **Apply** deletes and heals all checked faces under one NX undo mark and leaves the window open. Select a carrier again for another pass. **OK** applies and closes. **Cancel** or Escape closes and removes the preview without applying the pending selection. Previously applied passes remain until NX Undo is used.
+
+Detection removes the carrier face from the face-adjacency graph and groups connected faces attached to it. A group qualifies when its bounding-box diagonal is within the limit and it is not the entire remaining body. This is a geometric candidate search, not text recognition: holes, bosses, and other small details can qualify and must be excluded during review. Connected lettering that merges with another structure, lettering spanning multiple carrier faces, or lettering lacking a separate topological island may be missed. Assembly occurrences and sheet bodies are not supported by this workflow. Failed healing rolls back the pass and requires a fresh selection and scan.
 
 ## Known limitations
 

@@ -36,7 +36,7 @@ ACTIONS NXRefine.FillHoles.dll
 
 BUTTON NX_REFINE_REMOVE_MARKINGS
 LABEL Remove Markings
-MESSAGE Remove history-based text, engraving, and emboss features.
+MESSAGE Find and review connected marking face groups on a selected body.
 BITMAP text
 ACTIONS NXRefine.RemoveMarkings.dll
 

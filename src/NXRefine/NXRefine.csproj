@@ -59,6 +59,7 @@
     <Compile Include="Analysis\GeometryAnalyzer.cs" />
     <Compile Include="Repair\CleanupEngine.cs" />
     <Compile Include="UI\SettingsForm.cs" />
+    <Compile Include="UI\MarkingsForm.cs" />
   </ItemGroup>
   <Target Name="CopyToDeploy" AfterTargets="Build" Condition="'$(SkipDeploy)' != 'true'">
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="..\..\deploy\application" />
