@@ -187,7 +187,8 @@ namespace NXRefine.UI
                 if (component.Length == 0) continue;
                 foreach (Face face in component) seen.Add(face.Tag);
                 double height = FeatureHeight(component);
-                if (height <= maxHeight.Value && component.Length < faces.Count)
+                double heightTolerance = Math.Max(1e-6, maxHeight.Value * 1e-6);
+                if (height <= maxHeight.Value + heightTolerance && component.Length < faces.Count)
                 {
                     groups.Add(component);
                     acceptedHeights.Add(height);
@@ -222,9 +223,10 @@ namespace NXRefine.UI
         private double FeatureHeight(IEnumerable<Face> faces)
         {
             // The selected carrier supplies the reference normal. Projecting
-            // each candidate's WCS bounding box onto that normal gives a stable
-            // boss/cavity height for planar and mildly curved carrier faces,
-            // without depending on a particular modeling feature history.
+            // actual topology vertices onto that normal measures height without
+            // mixing character width into the result.  Projecting an axis-aligned
+            // WCS bounding box is not valid here: when the carrier normal is not
+            // aligned to WCS, a wide character can falsely appear much taller.
             double[] point = new double[3];
             double[] normal = new double[3];
             double[] carrierBox = new double[6];
@@ -244,6 +246,35 @@ namespace NXRefine.UI
             }
             for (int i = 0; i < 3; i++) normal[i] /= normalLength;
             double carrierProjection = Dot(point, normal);
+            double height = 0;
+            bool sampled = false;
+            foreach (Edge edge in faces.SelectMany(face => face.GetEdges())
+                .GroupBy(edge => edge.Tag).Select(group => group.First()))
+            {
+                try
+                {
+                    Point3d first;
+                    Point3d second;
+                    edge.GetVertices(out first, out second);
+                    height = Math.Max(height, DistanceFromCarrier(first, carrierProjection, normal));
+                    height = Math.Max(height, DistanceFromCarrier(second, carrierProjection, normal));
+                    sampled = true;
+                }
+                catch (NXException) { }
+            }
+            // A closed analytic face can exceptionally have no usable edge
+            // vertices.  Preserve a conservative fallback for that case only.
+            return sampled ? height : BoundingBoxHeight(faces, carrierProjection, normal);
+        }
+
+        private static double DistanceFromCarrier(Point3d point, double carrierProjection, double[] normal)
+        {
+            double projection = point.X * normal[0] + point.Y * normal[1] + point.Z * normal[2];
+            return Math.Abs(projection - carrierProjection);
+        }
+
+        private double BoundingBoxHeight(IEnumerable<Face> faces, double carrierProjection, double[] normal)
+        {
             double low = double.MaxValue;
             double high = double.MinValue;
             foreach (Face face in faces)
