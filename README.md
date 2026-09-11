@@ -91,7 +91,7 @@ deploy/
 5. Run one focused repair at a time and inspect the result.
 6. Run **Analyze** again before exporting to a simulation system.
 
-All length values use the current part unit. Area values use the corresponding squared part unit. The default marking-height range `0.5`–`2.0` therefore means millimetres in a metric part; for an inch part, enter approximately `0.0197`–`0.0787`.
+All length values use the current part unit. Area values use the corresponding squared part unit. The default maximum marking height `2.0` therefore means millimetres in a metric part; for an inch part, enter approximately `0.0787`.
 Candidate faces are highlighted during repair preview. Closing a confirmation dialog clears the preview before deletion starts. Repair completion counts are written silently to the NX system log; repair completion and cancellation do not open the Listing Window. The Analyze command still opens its requested analysis report.
 
 ### Remove Markings workflow
@@ -99,13 +99,13 @@ Candidate faces are highlighted during repair preview. Closing a confirmation di
 The command uses an NX native Block Styler dialog with native selection collectors and OK / Apply / Cancel navigation. Labels remain English; NX supplies its own theme and navigation button language.
 
 1. Select exactly one large lettering carrier face in **Carrier face**. Its solid body becomes the search scope.
-2. Candidates are treated as connected **boss / pocket groups**, so the faces making up one character stay together. Adjust **Min feature height** and **Max feature height** (default `0.5` to `2.0`, current part units) to reject tall bosses, and use **Max group diagonal** to limit the group's overall footprint. Click **Find Candidates / Restore All** to rescan and restore every candidate.
+2. Candidates are treated as connected **boss / pocket groups**, so the faces making up one character stay together. Adjust **Max feature height** (default `2.0`, current part units) to reject tall bosses. Character width and overall footprint are not limited. Click **Find Candidates / Restore All** to rescan and restore every candidate.
 3. **Boss / pocket faces to delete** holds the highlighted candidates. Activate this native collector and use NX's deselection controls to remove a face; its entire connected group is excluded. The carrier face is never a deletion candidate.
 4. **Apply** deletes and heals the retained faces under one NX undo mark and leaves the dialog open. Select a carrier again for another pass. **OK** applies and closes. **Cancel** or Escape closes and removes the pending preview. Previously applied passes remain until NX Undo is used.
 
 Keep `deploy/application/NXRefine.Markings.dlx` beside `NXRefine.dll`; this is the native dialog layout required at runtime.
 
-Detection removes the carrier face from the face-adjacency graph and groups connected faces attached to it. A group qualifies when its bounding-box diagonal and projected boss/pocket height are within the limits and it is not the entire remaining body. This is a geometric candidate search, not text recognition: holes, bosses, and other small details can qualify and must be excluded during review. Connected lettering that merges with another structure, lettering spanning multiple carrier faces, or lettering lacking a separate topological island may be missed. Assembly occurrences and sheet bodies are not supported by this workflow. Failed healing rolls back the pass and requires a fresh selection and scan.
+Detection removes the carrier face from the face-adjacency graph and groups connected faces attached to it. A group qualifies when its projected boss/pocket height does not exceed the maximum and it is not the entire remaining body. This is a geometric candidate search, not text recognition: shallow holes, bosses, ribs, and other details can qualify and must be excluded during review. Connected lettering that merges with another structure, lettering spanning multiple carrier faces, or lettering lacking a separate topological island may be missed. Assembly occurrences and sheet bodies are not supported by this workflow. Failed healing rolls back the pass and requires a fresh selection and scan.
 
 ## Known limitations
 

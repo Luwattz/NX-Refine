@@ -1,25 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Dialog id="Dialog" name="Dialog" type="uicomp" class="" version="1.0.0" NX="2312" Expanded="1" ContainerItems="7">
+<Dialog id="Dialog" name="Dialog" type="uicomp" class="" version="1.0.0" NX="2312" Expanded="1" ContainerItems="5">
 <item id="carrier" name="carrier" type="uicomp" class="UICOMP_selection" Expanded="1" hierarchy="UGS::UI::Comp::Container"><PropertyList id="id" mode="0">
 <Property id="API Name" name="API Name" sname="BlockID" type="string" value="carrier" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
 <Property id="Visibility" name="Visibility" sname="Show" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
 <Property id="Sensitivity" name="Sensitivity" sname="Enable" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
 <Property id="Label" name="Label" sname="LabelString" type="utfstring" value="Carrier face (select one)" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_selection" group="General::" />
 
-</PropertyList></item>
-<item id="limit" name="limit" type="uicomp" class="UICOMP_double" Expanded="1" hierarchy="UGS::UI::Comp::Container"><PropertyList id="id" mode="0">
-<Property id="API Name" name="API Name" sname="BlockID" type="string" value="limit" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
-<Property id="Visibility" name="Visibility" sname="Show" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
-<Property id="Sensitivity" name="Sensitivity" sname="Enable" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
-<Property id="Title" name="Title" sname="Label" type="utfstring" value="Max group diagonal (part units)" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_double" group="General::" />
-<Property id="Value" name="Value" sname="Value" type="double" value="20" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_double" group="General::" /><Property id="MinimumValue" name="MinimumValue" sname="MinimumValue" type="double" value="0.001" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_double" group="General::" /><Property id="MaximumValue" name="MaximumValue" sname="MaximumValue" type="double" value="100000" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_double" group="General::" />
-</PropertyList></item>
-<item id="minHeight" name="minHeight" type="uicomp" class="UICOMP_double" Expanded="1" hierarchy="UGS::UI::Comp::Container"><PropertyList id="id" mode="0">
-<Property id="API Name" name="API Name" sname="BlockID" type="string" value="minHeight" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
-<Property id="Visibility" name="Visibility" sname="Show" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
-<Property id="Sensitivity" name="Sensitivity" sname="Enable" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
-<Property id="Title" name="Title" sname="Label" type="utfstring" value="Min feature height (part units)" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_double" group="General::" />
-<Property id="Value" name="Value" sname="Value" type="double" value="0.5" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_double" group="General::" /><Property id="MinimumValue" name="MinimumValue" sname="MinimumValue" type="double" value="0" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_double" group="General::" /><Property id="MaximumValue" name="MaximumValue" sname="MaximumValue" type="double" value="100000" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_double" group="General::" />
 </PropertyList></item>
 <item id="maxHeight" name="maxHeight" type="uicomp" class="UICOMP_double" Expanded="1" hierarchy="UGS::UI::Comp::Container"><PropertyList id="id" mode="0">
 <Property id="API Name" name="API Name" sname="BlockID" type="string" value="maxHeight" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />

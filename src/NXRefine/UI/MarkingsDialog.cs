@@ -18,7 +18,7 @@ namespace NXRefine.UI
         private readonly BlockDialog dialog;
         private SelectObject carrierSelect;
         private FaceCollector keptSelect;
-        private DoubleBlock limit, minHeight, maxHeight;
+        private DoubleBlock maxHeight;
         private NXOpen.BlockStyler.Label status;
         private Body body;
         private Face carrier;
@@ -58,8 +58,6 @@ namespace NXRefine.UI
         {
             carrierSelect = (SelectObject)dialog.TopBlock.FindBlock("carrier");
             keptSelect = (FaceCollector)dialog.TopBlock.FindBlock("faces");
-            limit = (DoubleBlock)dialog.TopBlock.FindBlock("limit");
-            minHeight = (DoubleBlock)dialog.TopBlock.FindBlock("minHeight");
             maxHeight = (DoubleBlock)dialog.TopBlock.FindBlock("maxHeight");
             status = (NXOpen.BlockStyler.Label)dialog.TopBlock.FindBlock("status");
             var mask = new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_ANY_FACE);
@@ -84,7 +82,7 @@ namespace NXRefine.UI
             try
             {
                 updating = true;
-                if (block == carrierSelect || block == limit || block == minHeight || block == maxHeight || block.Name == "find")
+                if (block == carrierSelect || block == maxHeight || block.Name == "find")
                 {
                     ClearPreview();
                     keptSelect.SetSelectedObjects(new TaggedObject[0]);
@@ -107,7 +105,7 @@ namespace NXRefine.UI
                 }
                 Preview();
                 status.Label = groups.Count + " connected boss/pocket groups; " + keptSelect.GetSelectedObjects().Length +
-                    " faces retained. Height " + minHeight.Value.ToString("0.###") + "-" + maxHeight.Value.ToString("0.###") +
+                    " faces retained. Maximum height " + maxHeight.Value.ToString("0.###") +
                     ". Review bosses and holes before Apply.";
                 return 0;
             }
@@ -142,14 +140,8 @@ namespace NXRefine.UI
 
         private void Scan()
         {
-            if (limit.Value <= 0 || double.IsNaN(limit.Value) || double.IsInfinity(limit.Value))
-                throw new InvalidOperationException("Maximum group diagonal must be positive.");
-            if (minHeight.Value < 0 || double.IsNaN(minHeight.Value) || double.IsInfinity(minHeight.Value))
-                throw new InvalidOperationException("Minimum feature height must be zero or positive.");
             if (maxHeight.Value <= 0 || double.IsNaN(maxHeight.Value) || double.IsInfinity(maxHeight.Value))
                 throw new InvalidOperationException("Maximum feature height must be positive.");
-            if (minHeight.Value > maxHeight.Value)
-                throw new InvalidOperationException("Minimum feature height cannot exceed the maximum feature height.");
             var faces = body.GetFaces().Where(f => f.Tag != carrier.Tag).ToDictionary(f => f.Tag);
             var adjacency = faces.Keys.ToDictionary(tag => tag, tag => new HashSet<Tag>());
             var boundary = new HashSet<Tag>();
@@ -177,9 +169,8 @@ namespace NXRefine.UI
                 if (component.Length == 0 || component.Any(face => seen.Contains(face.Tag)))
                     continue;
                 foreach (Face face in component) seen.Add(face.Tag);
-                double diagonal = Diagonal(component);
                 double height = FeatureHeight(component);
-                if (diagonal <= limit.Value && height >= minHeight.Value && height <= maxHeight.Value && component.Length < faces.Count)
+                if (height <= maxHeight.Value && component.Length < faces.Count)
                     groups.Add(component);
             }
         }
@@ -273,20 +264,6 @@ namespace NXRefine.UI
         {
             return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
         }
-
-        private double Diagonal(IEnumerable<Face> faces)
-        {
-            double[] low = { double.MaxValue, double.MaxValue, double.MaxValue };
-            double[] high = { double.MinValue, double.MinValue, double.MinValue };
-            foreach (Face face in faces)
-            {
-                var box = new double[6];
-                context.UF.Modl.AskBoundingBox(face.Tag, box);
-                for (int i = 0; i < 3; i++) { low[i] = Math.Min(low[i], box[i]); high[i] = Math.Max(high[i], box[i + 3]); }
-            }
-            return Math.Sqrt(Enumerable.Range(0, 3).Sum(i => (high[i] - low[i]) * (high[i] - low[i])));
-        }
-
 
         private void Preview()
         {
