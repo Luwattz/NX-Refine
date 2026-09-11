@@ -38,6 +38,8 @@ namespace NXRefine.UI
             dialog.AddApplyHandler(Apply);
             dialog.AddOkHandler(Apply);
             dialog.AddCancelHandler(Cancel);
+            dialog.AddFocusNotifyHandler(SelectionFocusChanged);
+            dialog.AddKeyboardFocusNotifyHandler(KeyboardFocusChanged);
         }
 
         public void ShowDialog()
@@ -315,19 +317,67 @@ namespace NXRefine.UI
             keptSelect.SetSelectedObjects(RetainedFaces().Cast<TaggedObject>().ToArray());
         }
 
+        private void SelectionFocusChanged(UIBlock block, bool isFocus)
+        {
+            // Block Styler repaints native selection collectors when focus
+            // changes and can clear programmatic UF highlights after Update
+            // has returned. Reapply the retained snapshot after focus enters a
+            // selection block so the viewport and collector count stay aligned.
+            if (isFocus && ready && !updating) Preview();
+        }
+
+        private void KeyboardFocusChanged(UIBlock block, bool isFocus)
+        {
+            // Numeric controls have a separate keyboard-focus notification.
+            // Repainting here covers the common workflow of editing the height
+            // and then moving back to the face collector.
+            if (isFocus && ready && !updating) Preview();
+        }
+
         private void Preview()
         {
-            ClearPreview();
-            foreach (Face face in RetainedFaces())
-                context.UF.Disp.SetHighlight(face.Tag, 1);
-            context.WorkPart.ModelingViews.WorkView.UpdateDisplay();
+            Face[] faces = RetainedFaces();
+            var retainedTags = new HashSet<Tag>(faces.Select(face => face.Tag));
+            Tag[] excludedTags = groups.SelectMany(group => group)
+                .Select(face => face.Tag)
+                .Where(tag => !retainedTags.Contains(tag))
+                .Distinct()
+                .ToArray();
+
+            // SetSelectedObjects has already asked the native FaceCollector to
+            // display every retained face.  Do not unhighlight those same faces
+            // here: clearing all candidates after populating the collector lets
+            // Block Styler's deferred repaint restore the previous visual state.
+            // Only clear faces that the user excluded, then reinforce the exact
+            // retained snapshot in one batch.
+            SetHighlights(excludedTags, 0);
+            SetHighlights(retainedTags.ToArray(), 1);
+            context.UF.Disp.Refresh();
         }
 
         private void ClearPreview()
         {
-            foreach (Face face in groups.SelectMany(g => g))
-                try { context.UF.Disp.SetHighlight(face.Tag, 0); } catch (NXException) { }
+            SetGroupHighlights(0);
             context.UF.Disp.Refresh();
+        }
+
+        private void SetGroupHighlights(int highlight)
+        {
+            Tag[] tags = groups.SelectMany(group => group).Select(face => face.Tag).Distinct().ToArray();
+            SetHighlights(tags, highlight);
+        }
+
+        private void SetHighlights(Tag[] tags, int highlight)
+        {
+            if (tags.Length == 0) return;
+            try { context.UF.Disp.SetHighlights(tags.Length, tags, highlight); }
+            catch (NXException)
+            {
+                // If one stale tag prevents a bulk update after a modeling
+                // change, still clear or highlight every remaining valid face.
+                foreach (Tag tag in tags)
+                    try { context.UF.Disp.SetHighlight(tag, highlight); } catch (NXException) { }
+            }
         }
 
         private void Reset()
