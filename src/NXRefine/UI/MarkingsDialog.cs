@@ -72,6 +72,11 @@ namespace NXRefine.UI
             keptSelect.FaceRules = 2048; // Boss and Pocket Faces
             keptSelect.DefaultFaceRulesAsString = "Boss and Pocket Faces";
             keptSelect.PopupMenuEnabled = true;
+            // NX can retain a value by the block's previous layout position
+            // while a dialog is reloaded in the same session.  Set the new,
+            // single height control explicitly so it cannot inherit the old
+            // 20-unit group-diagonal value.
+            maxHeight.Value = 2.0;
             ready = true;
             status.Label = "Select the lettering carrier face (its body is the search scope). Connected boss and pocket faces within the height limits will be highlighted.";
         }
@@ -82,7 +87,13 @@ namespace NXRefine.UI
             try
             {
                 updating = true;
-                if (block == carrierSelect || block == maxHeight || block.Name == "find")
+                string blockName = block == null ? string.Empty : block.Name;
+                // Block Styler may supply a fresh managed wrapper for an
+                // update event, so compare the stable block id rather than
+                // relying on managed object reference equality.  In
+                // particular, changing Max feature height must rescan rather
+                // than merely repainting the previous candidate list.
+                if (blockName == "carrier" || blockName == "maxHeight" || blockName == "find")
                 {
                     ClearPreview();
                     keptSelect.SetSelectedObjects(new TaggedObject[0]);
@@ -96,7 +107,7 @@ namespace NXRefine.UI
                     Scan();
                     keptSelect.SetSelectedObjects(groups.SelectMany(g => g).Cast<TaggedObject>().ToArray());
                 }
-                else if (block == keptSelect)
+                else if (blockName == "faces")
                 {
                     // Removing one face from the native collector excludes its complete connected group.
                     var kept = new HashSet<Tag>(keptSelect.GetSelectedObjects().Select(o => o.Tag));
