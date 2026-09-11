@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -16,15 +17,18 @@ namespace NXRefine.UI
     {
         private readonly NxContext context;
         private readonly BlockDialog dialog;
+        private readonly System.Windows.Forms.Timer heightTimer;
         private SelectObject carrierSelect;
         private FaceCollector keptSelect;
-        private DoubleBlock maxHeight;
+        private StringBlock maxHeight;
+        private string heightText = "2";
         private NXOpen.BlockStyler.Label status;
         private Body body;
         private Face carrier;
         private readonly List<Face[]> groups = new List<Face[]>();
         private readonly HashSet<Tag> retained = new HashSet<Tag>();
         private double activeMaxHeight = 2.0;
+        private bool previewValid;
         private bool updating;
         private bool ready;
 
@@ -41,6 +45,9 @@ namespace NXRefine.UI
             dialog.AddCancelHandler(Cancel);
             dialog.AddFocusNotifyHandler(SelectionFocusChanged);
             dialog.AddKeyboardFocusNotifyHandler(KeyboardFocusChanged);
+            dialog.AddEnableOKButtonHandler(CanApply);
+            heightTimer = new System.Windows.Forms.Timer { Interval = 200 };
+            heightTimer.Tick += RefreshHeight;
         }
 
         public void ShowDialog()
@@ -48,6 +55,7 @@ namespace NXRefine.UI
             try { dialog.Launch(); }
             finally
             {
+                heightTimer.Stop();
                 // A native Block Styler dialog can be closed from its title-bar
                 // close button without entering the OK/Apply callbacks.  Clear
                 // NX's global selection list here as a final safety net.  Do not
@@ -62,7 +70,7 @@ namespace NXRefine.UI
         {
             carrierSelect = (SelectObject)dialog.TopBlock.FindBlock("carrier");
             keptSelect = (FaceCollector)dialog.TopBlock.FindBlock("faces");
-            maxHeight = (DoubleBlock)dialog.TopBlock.FindBlock("maxHeight");
+            maxHeight = (StringBlock)dialog.TopBlock.FindBlock("heightInput");
             status = (NXOpen.BlockStyler.Label)dialog.TopBlock.FindBlock("status");
             var mask = new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_ANY_FACE);
             carrierSelect.SetSelectionFilter(Selection.SelectionAction.ClearAndEnableSpecific, new[] { mask });
@@ -75,11 +83,11 @@ namespace NXRefine.UI
             keptSelect.FaceRules = 2048; // Boss and Pocket Faces
             keptSelect.DefaultFaceRulesAsString = "Boss and Pocket Faces";
             keptSelect.PopupMenuEnabled = true;
-            // NX can retain a value by the block's previous layout position
-            // while a dialog is reloaded in the same session.  Set the new,
-            // single height control explicitly so it cannot inherit the old
-            // 20-unit group-diagonal value.
-            maxHeight.Value = 2.0;
+            // StringBlock exposes uncommitted text through an NX-native callback;
+            // DoubleBlock only exposes the last committed numeric value.
+            maxHeight.RetainValue = false;
+            maxHeight.Value = "2";
+            maxHeight.SetKeystrokeCallback(HeightEdited);
             activeMaxHeight = 2.0;
             ready = true;
             status.Label = "Select the lettering carrier face (its body is the search scope). Connected boss and pocket faces within the height limits will be highlighted.";
@@ -92,23 +100,25 @@ namespace NXRefine.UI
             {
                 updating = true;
                 string blockName = block == null ? string.Empty : block.Name;
+                // A delayed native commit of text already scanned must not
+                // restore groups that the user has since excluded.
+                if (blockName == "heightInput" && previewValid &&
+                    !heightTimer.Enabled && ReadMaximumHeight() == activeMaxHeight)
+                    return 0;
                 // Block Styler may supply a fresh managed wrapper for an
                 // update event, so compare the stable block id rather than
                 // relying on managed object reference equality.  In
                 // particular, changing Max feature height must rescan rather
                 // than merely repainting the previous candidate list.
-                if (blockName == "carrier" || blockName == "maxHeight" || blockName == "find")
+                if (blockName == "carrier" || blockName == "heightInput" || blockName == "find")
                 {
-                    // During VALUE_CHANGED NX 2312 can return the previous value
-                    // from DoubleBlock.Value even though the native control is
-                    // already displaying the new value. Query the event block's
-                    // live property list instead and keep one committed value for
-                    // scanning, status text, preview, and deletion.
-                    activeMaxHeight = ReadMaximumHeight(blockName == "maxHeight" ? block : maxHeight);
+                    heightTimer.Stop();
+                    previewValid = false;
                     ClearPreview();
                     keptSelect.SetSelectedObjects(new TaggedObject[0]);
                     groups.Clear();
                     retained.Clear();
+                    activeMaxHeight = ReadMaximumHeight();
                     Face[] selected = carrierSelect.GetSelectedObjects().OfType<Face>().ToArray();
                     if (selected.Length != 1) { status.Label = "Select exactly one carrier face."; return 0; }
                     carrier = selected[0];
@@ -118,6 +128,7 @@ namespace NXRefine.UI
                     Scan(activeMaxHeight);
                     foreach (Face face in groups.SelectMany(group => group)) retained.Add(face.Tag);
                     SyncCollector();
+                    previewValid = true;
                 }
                 else if (blockName == "faces")
                 {
@@ -140,6 +151,8 @@ namespace NXRefine.UI
 
         private int Cancel()
         {
+            heightTimer.Stop();
+            previewValid = false;
             // Native selection collectors must be emptied while the Block Styler
             // dialog is still active. Doing this after Launch returns makes NX
             // attempt to free an already-released collector object.
@@ -164,14 +177,63 @@ namespace NXRefine.UI
             return 0;
         }
 
-        private double ReadMaximumHeight(UIBlock source)
+        private double ReadMaximumHeight()
         {
-            if (source != null)
+            double value;
+            // No thousands separators: "1,5" may be a locale decimal, never 15.
+            if ((!double.TryParse(heightText, NumberStyles.Float, CultureInfo.CurrentCulture, out value) &&
+                 !double.TryParse(heightText, NumberStyles.Float, CultureInfo.InvariantCulture, out value)) ||
+                double.IsNaN(value) || double.IsInfinity(value) || value <= 0 || value > 100000)
+                throw new InvalidOperationException("Enter a maximum height greater than 0 and no greater than 100000.");
+            return value;
+        }
+
+        private int HeightEdited(StringBlock block, string uncommittedValue)
+        {
+            if (!ready || updating || heightText == uncommittedValue) return 0;
+            heightText = uncommittedValue;
+            heightTimer.Stop();
+            previewValid = false;
+            updating = true;
+            try
             {
-                try { return source.GetProperties().GetDouble("Value"); }
-                catch (NXException) { }
+                // Invalidate the complete previous selection before rebuilding.
+                keptSelect.SetSelectedObjects(new TaggedObject[0]);
+                ClearPreview();
+                groups.Clear();
+                retained.Clear();
+                status.Label = "Updating candidates for maximum height " + heightText + "...";
+                heightTimer.Start();
             }
-            return maxHeight.Value;
+            catch (Exception ex) { Error(ex); }
+            finally { updating = false; }
+            return 0;
+        }
+
+        private void RefreshHeight(object sender, EventArgs args)
+        {
+            // WinForms Timer runs on the NX UI thread, after the keystroke callback.
+            heightTimer.Stop();
+            if (!ready || updating) return;
+            try
+            {
+                if (Update(maxHeight) == 0 && previewValid)
+                {
+                    // Native selection focus is independent of the text caret.
+                    // Finish the native collector repaint and button validation
+                    // after Update has left its reentrancy guard.
+                    keptSelect.Focus();
+                    Preview();
+                }
+            }
+            catch (Exception ex) { Error(ex); }
+        }
+
+        private bool CanApply()
+        {
+            if (!ready || updating || !previewValid || heightTimer.Enabled || retained.Count == 0) return false;
+            try { return ReadMaximumHeight() == activeMaxHeight; }
+            catch (InvalidOperationException) { return false; }
         }
 
         private void Scan(double maximumHeight)
@@ -347,11 +409,8 @@ namespace NXRefine.UI
         private void KeyboardFocusChanged(UIBlock block, bool isFocus)
         {
             if (!ready || updating) return;
-            // Leaving the numeric field is a second, post-commit notification in
-            // NX 2312. Rescan here as a fallback for builds where VALUE_CHANGED
-            // exposes the old DoubleBlock.Value during the update callback.
-            if (!isFocus && block != null && block.Name == "maxHeight") Update(maxHeight);
-            else if (isFocus) Preview();
+            // Do not restore excluded groups merely because focus changed.
+            if (isFocus && previewValid) Preview();
         }
 
         private void Preview()
@@ -402,6 +461,8 @@ namespace NXRefine.UI
 
         private void Reset()
         {
+            heightTimer.Stop();
+            previewValid = false;
             updating = true;
             try
             {
@@ -423,6 +484,18 @@ namespace NXRefine.UI
         private int Apply()
         {
             if (!ready) return 1;
+            try
+            {
+                if (!previewValid || heightTimer.Enabled || ReadMaximumHeight() != activeMaxHeight)
+                {
+                    // If an edit arrived immediately before Apply, refresh the
+                    // preview and require another Apply after it can be reviewed.
+                    if (Update(maxHeight) == 0)
+                        status.Label += " Preview refreshed; review it before Apply.";
+                    return 1;
+                }
+            }
+            catch (Exception ex) { return Error(ex); }
             // Use the exact normalized preview snapshot.  The native collector
             // is a review UI and may expand its own selection-intent rules;
             // it is not the authority for the delete operation.
@@ -458,6 +531,7 @@ namespace NXRefine.UI
 
         private int Error(Exception ex)
         {
+            previewValid = false;
             ClearPreview();
             context.Log(ex.ToString());
             if (status != null) status.Label = "Failed: " + ex.Message;
@@ -466,6 +540,8 @@ namespace NXRefine.UI
 
         public void Dispose()
         {
+            heightTimer.Stop();
+            heightTimer.Dispose();
             // The global selection owner is restored only after Block Styler has
             // released its dialog. Clear it both before and after Dispose so a
             // title-bar close or native Cancel cannot leave the carrier/body

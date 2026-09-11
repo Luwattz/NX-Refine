@@ -7,12 +7,13 @@
 <Property id="Label" name="Label" sname="LabelString" type="utfstring" value="Carrier face (select one)" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_selection" group="General::" />
 
 </PropertyList></item>
-<item id="maxHeight" name="maxHeight" type="uicomp" class="UICOMP_double" Expanded="1" hierarchy="UGS::UI::Comp::Container"><PropertyList id="id" mode="0">
-<Property id="API Name" name="API Name" sname="BlockID" type="string" value="maxHeight" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
+<item id="heightInput" name="heightInput" type="uicomp" class="UICOMP_string" Expanded="1" hierarchy="UGS::UI::Comp::Container"><PropertyList id="id" mode="0">
+<Property id="API Name" name="API Name" sname="BlockID" type="string" value="heightInput" mask="16656" source="3" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_string" group="General::" />
 <Property id="Visibility" name="Visibility" sname="Show" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
 <Property id="Sensitivity" name="Sensitivity" sname="Enable" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
-<Property id="Title" name="Title" sname="Label" type="utfstring" value="Max feature height (part units)" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_double" group="General::" />
-<Property id="Value" name="Value" sname="Value" type="double" value="2" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_double" group="General::" /><Property id="MinimumValue" name="MinimumValue" sname="MinimumValue" type="double" value="0" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_double" group="General::" /><Property id="MaximumValue" name="MaximumValue" sname="MaximumValue" type="double" value="100000" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_double" group="General::" />
+<Property id="Title" name="Title" sname="Label" type="utfstring" value="Max feature height (part units)" mask="256" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_string" group="General::" />
+<Property id="Value" name="Value" sname="Value" type="utfstring" value="2" mask="256" source="4" ClassID="UGS::UICOMP_string" hierarchy="UGS::UICOMP_string" group="Block Specific::" />
+<Property id="ReadWrite" name="ReadWrite" sname="RetainValue" type="logical" value="False" mask="0" source="1" ClassID="UGS::UICOMP_widget" hierarchy="UGS::UICOMP_string" group="Other::" />
 </PropertyList></item>
 <item id="find" name="find" type="uicomp" class="UICOMP_button" Expanded="1" hierarchy="UGS::UI::Comp::Container"><PropertyList id="id" mode="0">
 <Property id="API Name" name="API Name" sname="BlockID" type="string" value="find" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
