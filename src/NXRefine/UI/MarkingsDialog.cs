@@ -23,6 +23,7 @@ namespace NXRefine.UI
         private Body body;
         private Face carrier;
         private readonly List<Face[]> groups = new List<Face[]>();
+        private readonly HashSet<Tag> retained = new HashSet<Tag>();
         private bool updating;
         private bool ready;
 
@@ -65,10 +66,9 @@ namespace NXRefine.UI
             carrierSelect.MaximumScopeAsString = "Within Work Part Only";
             keptSelect.EntityType = 16; // Faces
             keptSelect.MaximumScopeAsString = "Within Work Part Only";
-            // Keep the native NX selection-intent menu on the deletion collector
-            // focused on the same rule used by the scanner: one click represents
-            // all faces belonging to a boss or pocket (including a connected
-            // character), rather than a single face at a time.
+            // Keep the native NX selection-intent menu on the review collector:
+            // one click represents all faces belonging to a boss or pocket
+            // (including a connected character), rather than a single face.
             keptSelect.FaceRules = 2048; // Boss and Pocket Faces
             keptSelect.DefaultFaceRulesAsString = "Boss and Pocket Faces";
             keptSelect.PopupMenuEnabled = true;
@@ -98,6 +98,7 @@ namespace NXRefine.UI
                     ClearPreview();
                     keptSelect.SetSelectedObjects(new TaggedObject[0]);
                     groups.Clear();
+                    retained.Clear();
                     Face[] selected = carrierSelect.GetSelectedObjects().OfType<Face>().ToArray();
                     if (selected.Length != 1) { status.Label = "Select exactly one carrier face."; return 0; }
                     carrier = selected[0];
@@ -105,17 +106,20 @@ namespace NXRefine.UI
                     if (carrier.IsOccurrence || !body.IsSolidBody)
                         throw new InvalidOperationException("Select a solid-body face in the work part.");
                     Scan();
-                    keptSelect.SetSelectedObjects(groups.SelectMany(g => g).Cast<TaggedObject>().ToArray());
+                    foreach (Face face in groups.SelectMany(group => group)) retained.Add(face.Tag);
+                    SyncCollector();
                 }
                 else if (blockName == "faces")
                 {
                     // Removing one face from the native collector excludes its complete connected group.
-                    var kept = new HashSet<Tag>(keptSelect.GetSelectedObjects().Select(o => o.Tag));
-                    keptSelect.SetSelectedObjects(groups.Where(g => g.All(f => kept.Contains(f.Tag)))
-                        .SelectMany(g => g).Cast<TaggedObject>().ToArray());
+                    var collectorTags = new HashSet<Tag>(keptSelect.GetSelectedObjects().Select(o => o.Tag));
+                    retained.Clear();
+                    foreach (Face[] group in groups.Where(group => group.All(face => collectorTags.Contains(face.Tag))))
+                        foreach (Face face in group) retained.Add(face.Tag);
+                    SyncCollector();
                 }
                 Preview();
-                status.Label = groups.Count + " connected boss/pocket groups; " + keptSelect.GetSelectedObjects().Length +
+                status.Label = RetainedGroupCount() + " connected boss/pocket groups; " + retained.Count +
                     " faces retained. Maximum height " + maxHeight.Value.ToString("0.###") +
                     ". Review bosses and holes before Apply.";
                 return 0;
@@ -137,6 +141,7 @@ namespace NXRefine.UI
                 if (carrierSelect != null) carrierSelect.SetSelectedObjects(new TaggedObject[0]);
                 context.UI.SelectionManager.ClearGlobalSelectionList();
                 groups.Clear();
+                retained.Clear();
                 carrier = null;
                 body = null;
                 ready = false;
@@ -168,45 +173,33 @@ namespace NXRefine.UI
                 }
             }
             var seen = new HashSet<Tag>();
+            var acceptedHeights = new List<double>();
+            int rejectedByHeight = 0;
             foreach (Tag seed in boundary)
             {
                 if (seen.Contains(seed)) continue;
-                Face[] component = ResolveBossPocketFaces(faces[seed], faces);
-                // Imported or damaged geometry may not be recognized by NX's
-                // boss/pocket intent rule. Preserve the topology-only fallback
-                // so the command still finds connected marking islands.
-                if (component == null || component.Length < 2)
-                    component = ConnectedComponent(seed, faces, adjacency);
-                if (component.Length == 0 || component.Any(face => seen.Contains(face.Tag)))
-                    continue;
+                // Candidate discovery deliberately uses only body topology.
+                // NX's Boss/Pocket selection-intent rule remains available in
+                // the native collector for review, but it can merge unrelated
+                // features or return only part of a connected character when
+                // used as a scanner.
+                Face[] component = ConnectedComponent(seed, faces, adjacency);
+                if (component.Length == 0) continue;
                 foreach (Face face in component) seen.Add(face.Tag);
                 double height = FeatureHeight(component);
                 if (height <= maxHeight.Value && component.Length < faces.Count)
+                {
                     groups.Add(component);
+                    acceptedHeights.Add(height);
+                }
+                else if (height > maxHeight.Value)
+                    rejectedByHeight++;
             }
-        }
-
-        private Face[] ResolveBossPocketFaces(Face seed, IDictionary<Tag, Face> bodyFaces)
-        {
-            ScCollector collector = null;
-            try
-            {
-                collector = context.WorkPart.ScCollectors.CreateCollector();
-                SelectionIntentRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceBossPocket(seed);
-                collector.ReplaceRules(new[] { rule }, false);
-                return (collector.GetObjects() ?? new DisplayableObject[0]).OfType<Face>()
-                    .Where(face => bodyFaces.ContainsKey(face.Tag))
-                    .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
-            }
-            catch (NXException)
-            {
-                return null;
-            }
-            finally
-            {
-                if (collector != null)
-                    try { collector.Destroy(); } catch (NXException) { }
-            }
+            context.Log("Remove Markings scan: max height " + maxHeight.Value.ToString("0.###") +
+                ", accepted topology groups " + acceptedHeights.Count +
+                (acceptedHeights.Count == 0 ? string.Empty :
+                    ", measured heights " + string.Join(", ", acceptedHeights.Select(value => value.ToString("0.###")))) +
+                ", rejected above maximum " + rejectedByHeight + ".");
         }
 
         private Face[] ConnectedComponent(Tag seed, IDictionary<Tag, Face> faces, IDictionary<Tag, HashSet<Tag>> adjacency)
@@ -276,10 +269,25 @@ namespace NXRefine.UI
             return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
         }
 
+        private Face[] RetainedFaces()
+        {
+            return groups.SelectMany(group => group).Where(face => retained.Contains(face.Tag)).ToArray();
+        }
+
+        private int RetainedGroupCount()
+        {
+            return groups.Count(group => group.All(face => retained.Contains(face.Tag)));
+        }
+
+        private void SyncCollector()
+        {
+            keptSelect.SetSelectedObjects(RetainedFaces().Cast<TaggedObject>().ToArray());
+        }
+
         private void Preview()
         {
             ClearPreview();
-            foreach (Face face in keptSelect.GetSelectedObjects().OfType<Face>())
+            foreach (Face face in RetainedFaces())
                 context.UF.Disp.SetHighlight(face.Tag, 1);
             context.WorkPart.ModelingViews.WorkView.UpdateDisplay();
         }
@@ -304,6 +312,7 @@ namespace NXRefine.UI
                 }
                 ClearPreview();
                 groups.Clear();
+                retained.Clear();
                 carrier = null;
                 body = null;
             }
@@ -313,10 +322,11 @@ namespace NXRefine.UI
         private int Apply()
         {
             if (!ready) return 1;
-            Face[] selected = keptSelect.GetSelectedObjects().OfType<Face>().ToArray();
+            // Use the exact normalized preview snapshot.  The native collector
+            // is a review UI and may expand its own selection-intent rules;
+            // it is not the authority for the delete operation.
+            Face[] selected = RetainedFaces();
             if (selected.Length == 0) return 1;
-            var allowed = new HashSet<Tag>(groups.SelectMany(g => g).Select(f => f.Tag));
-            if (selected.Any(f => !allowed.Contains(f.Tag))) return 1;
             Session.UndoMarkId mark = context.Session.SetUndoMark(Session.MarkVisibility.Visible, "NX Refine - Remove Marking Faces");
             DeleteFaceBuilder builder = null;
             try
