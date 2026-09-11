@@ -96,10 +96,14 @@ Candidate faces are highlighted during repair preview. Closing a confirmation di
 
 ### Remove Markings workflow
 
-1. Click **Select Body / Face**. Select a solid body, then its large lettering carrier face. Selecting the carrier face directly also selects its body.
-2. Candidates are scanned automatically. Adjust **Max group diagonal** (current part units) and click **Find Candidates** to rescan.
-3. Checked groups are highlighted. Uncheck a group in the list, or use **Pick Groups to Exclude** and pick any face in the group in NX. Repeat for other groups, then cancel the NX picker to return to the review window.
-4. **Apply** deletes and heals all checked faces under one NX undo mark and leaves the window open. Select a carrier again for another pass. **OK** applies and closes. **Cancel** or Escape closes and removes the preview without applying the pending selection. Previously applied passes remain until NX Undo is used.
+The command uses an NX native Block Styler dialog with native selection collectors and OK / Apply / Cancel navigation. Labels remain English; NX supplies its own theme and navigation button language.
+
+1. Select exactly one large lettering carrier face in **Carrier face**. Its solid body becomes the search scope.
+2. Candidates are scanned automatically. Adjust **Max group diagonal** (current part units), or click **Find Candidates / Restore All** to rescan and restore every candidate.
+3. **Faces to delete** holds the highlighted candidates. Activate this native collector and use NX's deselection controls to remove a face; its entire connected group is excluded. The carrier face is never a deletion candidate.
+4. **Apply** deletes and heals the retained faces under one NX undo mark and leaves the dialog open. Select a carrier again for another pass. **OK** applies and closes. **Cancel** or Escape closes and removes the pending preview. Previously applied passes remain until NX Undo is used.
+
+Keep `deploy/application/NXRefine.Markings.dlx` beside `NXRefine.dll`; this is the native dialog layout required at runtime.
 
 Detection removes the carrier face from the face-adjacency graph and groups connected faces attached to it. A group qualifies when its bounding-box diagonal is within the limit and it is not the entire remaining body. This is a geometric candidate search, not text recognition: holes, bosses, and other small details can qualify and must be excluded during review. Connected lettering that merges with another structure, lettering spanning multiple carrier faces, or lettering lacking a separate topological island may be missed. Assembly occurrences and sheet bodies are not supported by this workflow. Failed healing rolls back the pass and requires a fresh selection and scan.
 
