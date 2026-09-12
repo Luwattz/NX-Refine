@@ -141,8 +141,8 @@ namespace NXRefine.UI
                 }
                 Preview();
                 status.Label = RetainedGroupCount() + " connected boss/pocket groups; " + retained.Count +
-                    " faces retained. Maximum height " + activeMaxHeight.ToString("0.###") +
-                    ". Review bosses and holes before Apply.";
+                    " faces retained. Maximum height " + ToMillimeters(activeMaxHeight).ToString("0.###") +
+                    " mm. Review bosses and holes before Apply.";
                 return 0;
             }
             catch (Exception ex) { return Error(ex); }
@@ -179,13 +179,37 @@ namespace NXRefine.UI
 
         private double ReadMaximumHeight()
         {
-            double value;
+            double millimeters;
+            // The UI contract is millimetres regardless of the part unit system.
             // No thousands separators: "1,5" may be a locale decimal, never 15.
-            if ((!double.TryParse(heightText, NumberStyles.Float, CultureInfo.CurrentCulture, out value) &&
-                 !double.TryParse(heightText, NumberStyles.Float, CultureInfo.InvariantCulture, out value)) ||
-                double.IsNaN(value) || double.IsInfinity(value) || value <= 0 || value > 100000)
-                throw new InvalidOperationException("Enter a maximum height greater than 0 and no greater than 100000.");
-            return value;
+            if ((!double.TryParse(heightText, NumberStyles.Float, CultureInfo.CurrentCulture, out millimeters) &&
+                 !double.TryParse(heightText, NumberStyles.Float, CultureInfo.InvariantCulture, out millimeters)) ||
+                double.IsNaN(millimeters) || double.IsInfinity(millimeters) || millimeters <= 0 || millimeters > 100000)
+                throw new InvalidOperationException("Enter a maximum height in millimetres greater than 0 and no greater than 100000.");
+            try
+            {
+                Unit millimeterUnit = context.WorkPart.UnitCollection.FindObject("MilliMeter");
+                Unit partLengthUnit = context.WorkPart.UnitCollection.GetBase("Length");
+                return context.WorkPart.UnitCollection.Convert(millimeterUnit, partLengthUnit, millimeters);
+            }
+            catch (NXException ex)
+            {
+                throw new InvalidOperationException("The part length unit could not be converted from millimetres.", ex);
+            }
+        }
+
+        private double ToMillimeters(double partValue)
+        {
+            try
+            {
+                Unit millimeterUnit = context.WorkPart.UnitCollection.FindObject("MilliMeter");
+                Unit partLengthUnit = context.WorkPart.UnitCollection.GetBase("Length");
+                return context.WorkPart.UnitCollection.Convert(partLengthUnit, millimeterUnit, partValue);
+            }
+            catch (NXException ex)
+            {
+                throw new InvalidOperationException("The part length unit could not be converted to millimetres.", ex);
+            }
         }
 
         private int HeightEdited(StringBlock block, string uncommittedValue)
@@ -202,7 +226,7 @@ namespace NXRefine.UI
                 ClearPreview();
                 groups.Clear();
                 retained.Clear();
-                status.Label = "Updating candidates for maximum height " + heightText + "...";
+                status.Label = "Updating candidates for maximum height " + heightText + " mm...";
                 heightTimer.Start();
             }
             catch (Exception ex) { Error(ex); }
@@ -278,7 +302,7 @@ namespace NXRefine.UI
                 else if (height > maximumHeight)
                     rejectedByHeight++;
             }
-            context.Log("Remove Markings scan: max height " + maximumHeight.ToString("0.###") +
+            context.Log("Remove Markings scan: max height " + ToMillimeters(maximumHeight).ToString("0.###") + " mm (part value " + maximumHeight.ToString("0.###") + ")" +
                 ", accepted topology groups " + acceptedHeights.Count +
                 (acceptedHeights.Count == 0 ? string.Empty :
                     ", measured heights " + string.Join(", ", acceptedHeights.Select(value => value.ToString("0.###")))) +

@@ -7,8 +7,8 @@ integration checklist: compilation alone cannot verify native selection repaint.
 ## Input, preview, and selection
 
 1. Open Remove Markings and select the carrier. Confirm the default maximum is 2
-   in part units.
-2. Replace the maximum with 20, then 2, then 5, then 2 without pressing Enter or
+   mm.
+2. Replace the maximum (in mm) with 20, then 2, then 5, then 2 without pressing Enter or
    clicking Find Candidates. Pause briefly after each edit. The status maximum,
    collector count, and highlighted faces must all reflect the new threshold.
 3. During an edit, the previous candidate collection and highlights must clear.
@@ -43,7 +43,7 @@ integration checklist: compilation alone cannot verify native selection repaint.
 
 On the local metric test part, the live non-destructive sequence produced:
 
-| Maximum | Groups | Faces | Visible result |
+| Maximum (mm) | Groups | Faces | Visible result |
 |---|---:|---:|---|
 | 20 | 12 | 130 | Lettering and tall bosses highlighted |
 | 2 | 5 | 53 | Tall bosses and taller characters excluded |

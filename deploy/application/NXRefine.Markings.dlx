@@ -11,7 +11,7 @@
 <Property id="API Name" name="API Name" sname="BlockID" type="string" value="heightInput" mask="16656" source="3" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_string" group="General::" />
 <Property id="Visibility" name="Visibility" sname="Show" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
 <Property id="Sensitivity" name="Sensitivity" sname="Enable" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
-<Property id="Title" name="Title" sname="Label" type="utfstring" value="Max feature height (part units)" mask="256" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_string" group="General::" />
+<Property id="Title" name="Title" sname="Label" type="utfstring" value="Max feature height (mm)" mask="256" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_string" group="General::" />
 <Property id="Value" name="Value" sname="Value" type="utfstring" value="2" mask="256" source="4" ClassID="UGS::UICOMP_string" hierarchy="UGS::UICOMP_string" group="Block Specific::" />
 <Property id="ReadWrite" name="ReadWrite" sname="RetainValue" type="logical" value="False" mask="0" source="1" ClassID="UGS::UICOMP_widget" hierarchy="UGS::UICOMP_string" group="Other::" />
 </PropertyList></item>

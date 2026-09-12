@@ -89,7 +89,7 @@ deploy/
 5. Run one focused repair at a time and inspect the result.
 6. Run **Analyze** again before exporting to a simulation system.
 
-All length values use the current part unit. Area values use the corresponding squared part unit. The default maximum marking height `2.0` therefore means millimetres in a metric part; for an inch part, enter approximately `0.0787`.
+Area and other cleanup thresholds use the current part unit. Remove Markings **Max feature height** is the exception: it is always entered in millimetres, including for inch parts.
 Candidate faces are highlighted during repair preview. Closing a confirmation dialog clears the preview before deletion starts. Repair completion counts are written silently to the NX system log; repair completion and cancellation do not open the Listing Window. The Analyze command still opens its requested analysis report.
 
 ### Remove Markings workflow
@@ -97,7 +97,7 @@ Candidate faces are highlighted during repair preview. Closing a confirmation di
 The command uses an NX native Block Styler dialog with native selection collectors and OK / Apply / Cancel navigation. Labels remain English; NX supplies its own theme and navigation button language.
 
 1. Select exactly one large lettering carrier face in **Carrier face**. Its solid body becomes the search scope.
-2. Candidates are treated as connected **boss / pocket groups**, so the faces making up one character stay together. Adjust **Max feature height** (default `2`, current part units) to reject tall bosses. The native text field reads edits immediately: old candidates are cleared as you type, and the preview rebuilds after a short pause without requiring Enter. Invalid or incomplete input leaves no deletion candidates. OK / Apply are unavailable while the preview is pending or invalid. Character width and overall footprint are not limited. Changing height or clicking **Find Candidates / Restore All** rescans and restores every candidate.
+2. Candidates are treated as connected **boss / pocket groups**, so the faces making up one character stay together. Adjust **Max feature height (mm)** (default `2`) to reject tall bosses. The value is always interpreted in millimetres and converted to the active part unit system for geometry calculations. The native text field reads edits immediately: old candidates are cleared as you type, and the preview rebuilds after a short pause without requiring Enter. Invalid or incomplete input leaves no deletion candidates. OK / Apply are unavailable while the preview is pending or invalid. Character width and overall footprint are not limited. Changing height or clicking **Find Candidates / Restore All** rescans and restores every candidate.
 3. **Boss / pocket faces to delete** holds the highlighted candidates. Activate this native collector and use NX's deselection controls to remove a face; its entire connected group is excluded. The carrier face is never a deletion candidate.
 4. **Apply** deletes and heals the retained faces under one NX undo mark and leaves the dialog open. Select a carrier again for another pass. **OK** applies and closes. **Cancel** or Escape closes and removes the pending preview. Previously applied passes remain until NX Undo is used.
 
