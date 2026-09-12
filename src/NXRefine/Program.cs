@@ -32,6 +32,7 @@ namespace NXRefine
                     case "simplify": RunSimplify(context, engine); break;
                     case "remove-blends": ReportCount(context, "small blend faces", engine.RemoveBlends()); break;
                     case "fill-holes": using (var form = new FillHolesDialog(context, settings)) form.ShowDialog(); break;
+                    case "clear-cavities": using (var form = new ClearCavitiesDialog(context)) form.ShowDialog(); break;
                     case "remove-small": ReportCount(context, "small faces", engine.RemoveSmallFaces()); break;
                     case "repair-sheets": ReportCount(context, "sheet bodies", engine.RepairSheets()); break;
                     case "remove-markings": using (var form = new MarkingsDialog(context, settings)) form.ShowDialog(); break;
@@ -61,6 +62,7 @@ namespace NXRefine
                     if (normalized.Contains("nx_refine_simplify") || normalized == "simplify") return "simplify";
                     if (normalized.Contains("nx_refine_remove_blends") || normalized == "remove-blends") return "remove-blends";
                     if (normalized.Contains("nx_refine_fill_holes") || normalized == "fill-holes") return "fill-holes";
+                    if (normalized.Contains("nx_refine_clear_cavities") || normalized == "clear-cavities") return "clear-cavities";
                     if (normalized.Contains("nx_refine_remove_small") || normalized == "remove-small") return "remove-small";
                     if (normalized.Contains("nx_refine_repair_sheets") || normalized == "repair-sheets") return "repair-sheets";
                     if (normalized.Contains("nx_refine_remove_markings") || normalized == "remove-markings") return "remove-markings";

@@ -35,6 +35,7 @@ If the environment variable is not already configured, set the user-level `UGII_
 3. If it is hidden by the active role, right-click the ribbon and enable **Geometry Cleanup**.
 4. Open a disposable part copy and run **Geometry Cleanup > Analyze**.
 5. Confirm that the Listing Window reports the analysis summary.
+6. Open **Geometry Cleanup > Clear Cavities**, select a solid body containing a known fully enclosed void, and confirm that the cavity face group is highlighted before testing Apply/OK on a disposable copy.
 
 The `startup\nxrefine.men` file defines the commands, `startup\nxrefine_main.rtb` defines the ribbon layout, and `application\NXRefine*.dll` contains the command implementations.
 

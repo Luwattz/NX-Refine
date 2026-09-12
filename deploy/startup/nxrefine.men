@@ -22,6 +22,12 @@ MESSAGE Select bodies to detect inner holes, set a maximum radius, and review th
 BITMAP hole
 ACTIONS NXRefine.FillHoles.dll
 
+BUTTON NX_REFINE_CLEAR_CAVITIES
+LABEL Clear Cavities
+MESSAGE Select solid bodies to find fully enclosed internal cavities, review the highlighted cavity faces, and apply cleanup.
+BITMAP hole
+ACTIONS NXRefine.ClearCavities.dll
+
 BUTTON NX_REFINE_REMOVE_MARKINGS
 LABEL Remove Markings
 MESSAGE Select multiple carrier faces and review their connected marking candidates.

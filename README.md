@@ -11,6 +11,7 @@ NX Refine is an open-source Siemens NX add-on for geometry validation, defeaturi
 | Inspect | Analyze | Runs NX Examine Geometry checks, detects short edges, small faces, small blends, and cylindrical hole candidates, then highlights findings. |
 | Simplify | Remove Blends | Recognizes blend faces and removes those with radius at or below the configured threshold. |
 | Simplify | Fill Holes | Opens a native preview dialog for one or more target entities, automatic inner-hole seeds expanded by NX's Boss and Pocket Faces rule, a maximum hole radius, and a reviewable candidate-face collector. |
+| Simplify | Clear Cavities | Opens a native preview dialog for one or more solid bodies, detects face shells that are fully enclosed and disconnected from the outside, and lets you review or exclude cavity groups before healing them. |
 | Simplify | Remove Markings | Select one or more carrier faces, automatically add their connected candidate groups to the same collector, exclude groups, then Apply or OK to delete and heal retained candidates. Works without feature history; candidates require review. |
 | Repair | Repair Sheets | Sews sheet bodies with the configured tolerance and optimizes output faces. |
 | Repair | Patch Openings | Detects and highlights open sheet boundaries. Automatic surface reconstruction is preview-only in v0.1. |
@@ -117,12 +118,22 @@ Fill Holes uses an NX native Block Styler dialog with OK / Apply / Cancel naviga
 
 Keep `deploy/application/NXRefine.FillHoles.dlx` beside `NXRefine.dll`; this is the native dialog layout required at runtime. Native Boss/Pocket expansion is combined with geometric inner-wall validation. There is no adjacency-flood fallback: failed native expansions are skipped and logged. All cylindrical walls in a region must be internal and coaxial, preventing rounded rectangular cavities from qualifying as circular holes. Regions containing exterior cylinders or the entire body are rejected; intersecting holes and unusual imported topology may require manual repair.
 
+### Clear Cavities workflow
+
+Clear Cavities uses an NX native Block Styler dialog with OK / Apply / Cancel navigation.
+
+1. Select one or more solid bodies in **Target entities**. The command uses NX's exterior-face ray classification and face-edge connectivity to find closed internal shells that do not connect to the outside. Open pockets and the body's exterior shell are excluded.
+2. Review the **Cavity faces to remove** collector. Detected cavity shells are highlighted before any edit. All detected groups are initially retained; deselecting any face in a connected group removes that complete group from the preview and from the pending operation.
+3. **Apply** deletes and heals only the retained cavity faces and leaves the dialog open; **OK** applies and closes. **Cancel** or Escape clears the preview without changing geometry. Each pass is protected by one NX undo mark.
+
+This is a topology-based enclosed-shell detector, not a semantic recognition system. Imported or non-manifold bodies, self-intersecting faces, and cavities represented by a single connected exterior component may need manual review. The command does not delete the selected body itself, and a failed healing pass is rolled back.
+
 ## Known limitations
 
 - Hole detection starts from automatically detected inner cylindrical seeds and evaluates native Boss and Pocket Faces rules; imported bosses, partial cylinders, and unusual face orientations can still require manual review.
 - Small-face deletion is heuristic and may fail when adjacent surfaces cannot be extended safely.
 - `Repair Sheets` currently operates on all sheet bodies in the work part.
-- Arbitrary cavity removal, patterned-face replacement, and missing-face surface reconstruction require topology-aware algorithms planned for later releases.
+- Patterned-face replacement and missing-face surface reconstruction require topology-aware algorithms planned for later releases. Clear Cavities currently targets fully enclosed face shells; open pockets remain available through Fill Holes or native Delete Face workflows.
 - The project does not redistribute Siemens NX assemblies or documentation.
 
 See [Architecture](docs/ARCHITECTURE.md) for implementation details and the roadmap.

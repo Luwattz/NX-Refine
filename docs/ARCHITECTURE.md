@@ -6,6 +6,7 @@ NX Refine deliberately separates geometry inspection from geometry mutation.
 2. `CleanupEngine` groups repair candidates by owning body and executes each operation under one visible NX undo mark.
 3. Ribbon MenuScript files invoke the same managed DLL with a command argument.
 4. User thresholds are stored in `%APPDATA%\NXRefine\settings.ini`; Remove Markings' maximum feature height is persisted separately in millimetres, and Fill Holes' maximum radius is persisted in current part units.
+5. Clear Cavities classifies NX exterior faces with UFUN ray analysis, groups the remaining faces by edge connectivity, and heals only user-retained closed internal shells through a native Delete Face builder.
 
 ## Safety model
 
@@ -16,7 +17,7 @@ NX Refine deliberately separates geometry inspection from geometry mutation.
 
 ## Roadmap
 
-- Concavity-based pocket and cavity segmentation.
+- Concavity-based pocket segmentation for open cavities.
 - Connected-component grouping of sliver faces and small structures.
 - N-sided, planar, and through-curve-mesh patch strategies.
 - Dumb-solid engraving recognition using shallow concave face regions.

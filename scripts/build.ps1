@@ -23,6 +23,7 @@ $commands = @(
     "SmallFaces",
     "RemoveBlends",
     "FillHoles",
+    "ClearCavities",
     "RemoveMarkings",
     "RepairSheets",
     "PatchOpenings",
