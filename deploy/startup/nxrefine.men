@@ -10,18 +10,6 @@ MESSAGE Analyze the work part for geometry quality issues.
 BITMAP checkgreen
 ACTIONS NXRefine.Analyze.dll
 
-BUTTON NX_REFINE_SIMPLIFY
-LABEL Auto Simplify
-MESSAGE Remove configured small blends, holes, and faces.
-BITMAP optimize
-ACTIONS NXRefine.AutoSimplify.dll
-
-BUTTON NX_REFINE_REMOVE_SMALL
-LABEL Small Faces
-MESSAGE Remove configured small faces and heal the body.
-BITMAP delete
-ACTIONS NXRefine.SmallFaces.dll
-
 BUTTON NX_REFINE_REMOVE_BLENDS
 LABEL Remove Blends
 MESSAGE Remove blends at or below the configured radius.

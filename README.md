@@ -9,8 +9,6 @@ NX Refine is an open-source Siemens NX add-on for geometry validation, defeaturi
 | Group | Command | Current behavior |
 |---|---|---|
 | Inspect | Analyze | Runs NX Examine Geometry checks, detects short edges, small faces, small blends, and cylindrical hole candidates, then highlights findings. |
-| Simplify | Auto Simplify | Runs small-blend, small-hole, and small-face cleanup in sequence. |
-| Simplify | Small Faces | Deletes configured small-face candidates by body and asks NX to heal the result. |
 | Simplify | Remove Blends | Recognizes blend faces and removes those with radius at or below the configured threshold. |
 | Simplify | Fill Holes | Finds cylindrical candidates below the configured diameter and invokes NX hole deletion/healing. |
 | Simplify | Remove Markings | Select a body and carrier face, find small connected geometry groups, exclude groups, then Apply or OK to delete and heal checked faces. Works without feature history; candidates require review. |
