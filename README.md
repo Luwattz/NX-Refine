@@ -10,7 +10,7 @@ NX Refine is an open-source Siemens NX add-on for geometry validation, defeaturi
 |---|---|---|
 | Inspect | Analyze | Runs NX Examine Geometry checks, detects short edges, small faces, small blends, and cylindrical hole candidates, then highlights findings. |
 | Simplify | Remove Blends | Recognizes blend faces and removes those with radius at or below the configured threshold. |
-| Simplify | Fill Holes | Opens a native preview dialog for one or more target entities, a maximum hole radius, and selectable cylindrical hole faces. |
+| Simplify | Fill Holes | Opens a native preview dialog for one or more target entities, an inner-hole seed selector using NX's Boss and Pocket Faces rule, a maximum hole radius, and a reviewable candidate-face collector. |
 | Simplify | Remove Markings | Select one or more carrier faces, automatically add their connected candidate groups to the same collector, exclude groups, then Apply or OK to delete and heal retained candidates. Works without feature history; candidates require review. |
 | Repair | Repair Sheets | Sews sheet bodies with the configured tolerance and optimizes output faces. |
 | Repair | Patch Openings | Detects and highlights open sheet boundaries. Automatic surface reconstruction is preview-only in v0.1. |
@@ -110,16 +110,17 @@ Detection groups selected carriers by solid body, removes all selected carrier f
 
 Fill Holes uses an NX native Block Styler dialog with OK / Apply / Cancel navigation.
 
-1. Select one or more solid bodies in **Target entities**. The selection is limited to the work part and is used as the search scope.
-2. Enter **Max hole radius (part units)**. A value of `0` means no radius limit; otherwise only cylindrical faces whose radius is at or below the value are candidates.
-3. Inner-facing cylindrical hole seeds and their connected cavity surfaces are highlighted and recorded in **Hole faces to fill**. Exterior cylindrical bosses/walls are rejected by their face orientation. The collector accepts multiple faces. Deselecting any face removes its complete connected candidate region from the pending operation.
-4. **Apply** fills the retained hole faces and leaves the dialog open for another pass. **OK** fills and closes. **Cancel** or Escape clears the preview without modifying the part. Each pass uses one NX undo mark and failed multi-body healing rolls back the whole pass.
+1. Select one or more solid bodies in **Target entities**. The selection is limited to the work part and is used as the search scope; if no body is selected, the bodies of the seed faces are inferred.
+2. In **Seed inner hole faces**, pick the clearly visible inside cylindrical ring/wall of each screw hole or counterbore. The selector uses NX's native **Boss and Pocket Faces** intent, so NX expands the selected seed into its corresponding feature region. The plugin keeps only inner-facing cavity geometry and rejects exterior bosses and housing walls.
+3. Enter **Max hole radius (part units)**. A value of `0` means no radius limit; otherwise a selected hole region is accepted only when its inner cylindrical radii are at or below the value.
+4. The resulting regions are highlighted and recorded in **Hole faces to fill**. The collector accepts multiple faces. Deselecting any face removes its complete connected candidate region from the pending operation; the seed selector remains available for adding another hole.
+5. **Apply** fills the retained hole faces and leaves the dialog open for another pass. **OK** fills and closes. **Cancel** or Escape clears the preview without modifying the part. Each pass uses one NX undo mark and failed multi-body healing rolls back the whole pass.
 
-Keep `deploy/application/NXRefine.FillHoles.dlx` beside `NXRefine.dll`; this is the native dialog layout required at runtime. This preview identifies cylindrical faces geometrically; imported bosses and partial cylinders may require manual deselection.
+Keep `deploy/application/NXRefine.FillHoles.dlx` beside `NXRefine.dll`; this is the native dialog layout required at runtime. Native Boss/Pocket expansion is combined with geometric inner-wall validation; imported bosses and partial cylinders may require manual deselection.
 
 ## Known limitations
 
-- Hole detection starts from an inner-facing cylindrical wall and follows connected cavity-facing surfaces; imported bosses, partial cylinders, and unusual face orientations can still require manual review.
+- Hole detection starts only from an explicitly selected inner cylindrical seed and the native Boss and Pocket Faces expansion; imported bosses, partial cylinders, and unusual face orientations can still require manual review.
 - Small-face deletion is heuristic and may fail when adjacent surfaces cannot be extended safely.
 - `Repair Sheets` currently operates on all sheet bodies in the work part.
 - Arbitrary cavity removal, patterned-face replacement, and missing-face surface reconstruction require topology-aware algorithms planned for later releases.

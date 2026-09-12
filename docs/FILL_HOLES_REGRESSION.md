@@ -7,17 +7,20 @@ multi-face counterbore region.
 ## Dialog and preview
 
 1. Open **Fill Holes** and confirm the native dialog has a multiple **Target
-   entities** selector, a **Max hole radius (part units; 0 = any)** input, and a
-   lower multiple **Hole faces to fill** selector with OK, Apply, and Cancel.
-2. Select one body, then a second body. Candidates from both bodies must be
-   highlighted and remain in the lower collector.
-3. Enter `0`. Inner-facing cylindrical hole regions of every radius in the
-   selected bodies may be preview candidates, while exterior cylindrical walls
-   remain unselected. Enter a positive radius and verify regions containing an
-   inner cylinder above that radius are not highlighted or selected.
+   entities** selector, a multiple **Seed inner hole faces** selector whose
+   default intent is **Boss and Pocket Faces**, a **Max hole radius (part units;
+   0 = any)** input, and a lower multiple **Hole faces to fill** selector with
+   OK, Apply, and Cancel.
+2. Select one body, then a second body. Pick an inside cylindrical ring on each
+   body. NX must expand each seed with the native Boss/Pocket intent; only the
+   corresponding cavity regions are highlighted and retained in the lower
+   collector. Exterior cylindrical walls and unrelated bosses must stay out.
+3. Enter `0`. The explicitly seeded hole regions may be preview candidates
+   regardless of radius. Enter a positive radius and verify regions containing
+   an inner cylinder above that radius are not highlighted or selected.
 4. Deselect one face in a connected counterbore region. The complete connected
-   candidate region must leave the lower collector and preview. Use the native
-   collector to restore it and verify it returns.
+   candidate region must leave the lower collector and preview. Add another
+   seed or use the lower collector to restore it and verify it returns.
 5. Cancel and reopen. The preview and selections must clear, with no geometry
    mutation.
 

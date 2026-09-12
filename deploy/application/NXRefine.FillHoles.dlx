@@ -1,11 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Dialog id="Dialog" name="Dialog" type="uicomp" class="" version="1.0.0" NX="2312" Expanded="1" ContainerItems="3">
+<Dialog id="Dialog" name="Dialog" type="uicomp" class="" version="1.0.0" NX="2312" Expanded="1" ContainerItems="4">
 <item id="bodies" name="bodies" type="uicomp" class="UICOMP_selection" Expanded="1" hierarchy="UGS::UI::Comp::Container"><PropertyList id="id" mode="0">
 <Property id="API Name" name="API Name" sname="BlockID" type="string" value="bodies" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
 <Property id="Visibility" name="Visibility" sname="Show" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
 <Property id="Sensitivity" name="Sensitivity" sname="Enable" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
 <Property id="Label" name="Label" sname="LabelString" type="utfstring" value="Target entities (select one or more)" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_selection" group="General::" />
 <Property id="Many" mask="0" name="Many" type="enum" brief="0" group="Block Specific::" sname="SelectMode" source="3" ClassID="UGS::UICOMP_selection" dynamic="0" selected="1" hierarchy="UGS::UICOMP_selection"><Option name="Single" value="0"/><Option name="Multiple" value="1"/></Property>
+</PropertyList></item>
+<item id="seedFaces" name="seedFaces" type="uicomp" class="UICOMP_face_select" Expanded="1" hierarchy="UGS::UI::Comp::Container"><PropertyList id="id" mode="0">
+<Property id="API Name" name="API Name" sname="BlockID" type="string" value="seedFaces" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
+<Property id="Visibility" name="Visibility" sname="Show" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
+<Property id="Sensitivity" name="Sensitivity" sname="Enable" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
+<Property id="Label" name="Label" sname="LabelString" type="utfstring" value="Seed inner hole faces (select one or more)" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_selection" group="General::" />
+<Property id="Many" mask="0" name="Many" type="enum" brief="0" group="Block Specific::" sname="SelectMode" source="3" ClassID="UGS::UICOMP_selection" dynamic="0" selected="1" hierarchy="UGS::UICOMP_selection"><Option name="Single" value="0"/><Option name="Multiple" value="1"/></Property>
+<Property id="EntityType" name="EntityType" sname="EntityType" type="bits" value="0x10" mask="0" source="1" ClassID="UGS::UICOMP_sc_selection" hierarchy="UGS::UICOMP_face_select" />
+<Property id="FaceMethodMask" name="FaceMethodMask" sname="FaceRules" type="bits" value="0x801" mask="0" source="1" ClassID="UGS::UICOMP_sc_selection" hierarchy="UGS::UICOMP_face_select" AskForcedBits="1" AskRequiresSetting="1" />
+<Property id="FaceMethod" name="FaceMethod" sname="DefaultFaceRules" type="enum" brief="0" source="4" selected="2048" hierarchy="UGS::UICOMP_face_select"><Option name="Single Face" value="1"/><Option name="Boss and Pocket Faces" value="2048"/></Property>
+<Property id="IncludeBoundaryBlends" name="IncludeBoundaryBlends" sname="IncludeBoundaryBlends" type="logical" value="False" mask="0" source="4" ClassID="UGS::UICOMP_sc_selection" hierarchy="UGS::UICOMP_face_select" />
+<Property id="PopupMenuEnabled" name="PopupMenuEnabled" sname="PopupMenuEnabled" type="logical" value="True" mask="0" source="4" ClassID="UGS::UICOMP_sc_selection" hierarchy="UGS::UICOMP_face_select" />
 </PropertyList></item>
 <item id="radiusInput" name="radiusInput" type="uicomp" class="UICOMP_string" Expanded="1" hierarchy="UGS::UI::Comp::Container"><PropertyList id="id" mode="0">
 <Property id="API Name" name="API Name" sname="BlockID" type="string" value="radiusInput" mask="16656" source="3" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_string" group="General::" />

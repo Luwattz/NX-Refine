@@ -13,9 +13,9 @@ using SelectObject = NXOpen.BlockStyler.SelectObject;
 
 namespace NXRefine.UI
 {
-    // Native Block Styler workflow for selecting bodies, reviewing cylindrical
-    // hole faces, excluding connected candidate regions, and healing the exact
-    // retained faces on Apply/OK.
+    // Native Block Styler workflow for selecting target bodies and inner-hole
+    // seed faces, reviewing native Boss/Pocket candidate regions, excluding
+    // connected groups, and healing the exact retained faces on Apply/OK.
     internal sealed class FillHolesDialog : IDisposable
     {
         private readonly NxContext context;
@@ -24,10 +24,12 @@ namespace NXRefine.UI
         private readonly System.Windows.Forms.Timer radiusTimer;
         private readonly System.Windows.Forms.Timer previewTimer;
         private SelectObject bodySelect;
+        private FaceCollector seedSelect;
         private StringBlock maxRadius;
         private FaceCollector faceSelect;
         private string radiusText;
         private readonly Dictionary<Tag, Body> bodies = new Dictionary<Tag, Body>();
+        private readonly Dictionary<Tag, Face> seeds = new Dictionary<Tag, Face>();
         private readonly List<Face[]> groups = new List<Face[]>();
         private readonly HashSet<Tag> retained = new HashSet<Tag>();
         private double activeMaxRadius;
@@ -76,6 +78,17 @@ namespace NXRefine.UI
             bodySelect.SelectModeAsString = "Multiple";
             bodySelect.MaximumScopeAsString = "Within Work Part Only";
 
+            seedSelect = (FaceCollector)dialog.TopBlock.FindBlock("seedFaces");
+            seedSelect.EntityType = 16; // Faces
+            seedSelect.MaximumScopeAsString = "Within Work Part Only";
+            // Let NX perform the same Boss and Pocket Faces expansion as the
+            // native Delete Face command when the user picks an inner hole
+            // ring.  The preview model still applies an orientation filter so
+            // an outer boss or housing wall cannot enter the delete set.
+            seedSelect.FaceRules = 2049; // Single Face | Boss and Pocket Faces
+            seedSelect.DefaultFaceRulesAsString = "Boss and Pocket Faces";
+            seedSelect.PopupMenuEnabled = true;
+
             maxRadius = (StringBlock)dialog.TopBlock.FindBlock("radiusInput");
             radiusText = settings.FillHolesMaxRadius.ToString("0.########", CultureInfo.InvariantCulture);
             maxRadius.RetainValue = false;
@@ -102,6 +115,7 @@ namespace NXRefine.UI
                 string blockName = block == null ? string.Empty : block.Name;
                 if (blockName == "radiusInput") RebuildCandidates();
                 else if (blockName == "bodies") UpdateBodies();
+                else if (blockName == "seedFaces") UpdateSeedSelection();
                 else if (blockName == "faces") UpdateFaceSelection();
                 Preview();
                 QueuePreviewRefresh();
@@ -120,6 +134,18 @@ namespace NXRefine.UI
             if (selectedTags.SetEquals(bodies.Keys)) return;
             bodies.Clear();
             foreach (Body body in selected) bodies[body.Tag] = body;
+            RebuildCandidates();
+        }
+
+        private void UpdateSeedSelection()
+        {
+            Face[] selected = seedSelect.GetSelectedObjects().OfType<Face>()
+                .Where(face => !face.IsOccurrence && face.GetBody() != null && face.GetBody().IsSolidBody)
+                .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
+            var selectedTags = new HashSet<Tag>(selected.Select(face => face.Tag));
+            if (selectedTags.SetEquals(seeds.Keys)) return;
+            seeds.Clear();
+            foreach (Face face in selected) seeds[face.Tag] = face;
             RebuildCandidates();
         }
 
@@ -146,8 +172,17 @@ namespace NXRefine.UI
             activeMaxRadius = ReadMaximumRadius();
             settings.FillHolesMaxRadius = activeMaxRadius;
             settings.Save();
-            if (bodies.Count == 0) return;
-            foreach (Body body in bodies.Values) groups.AddRange(FindGroups(body, activeMaxRadius));
+            if (seeds.Count == 0) return;
+            // A target body limits the search when supplied.  If the user
+            // only picks seed faces, infer their solid bodies so the native
+            // face-selection workflow remains convenient.
+            IEnumerable<Body> searchBodies = bodies.Count > 0
+                ? bodies.Values
+                : seeds.Values.Select(face => face.GetBody()).Where(body => body != null && body.IsSolidBody)
+                    .GroupBy(body => body.Tag).Select(group => group.First());
+            Face[] selectedSeeds = seeds.Values.ToArray();
+            foreach (Body body in searchBodies)
+                groups.AddRange(FindGroups(body, selectedSeeds, activeMaxRadius));
             foreach (Face face in groups.SelectMany(group => group)) retained.Add(face.Tag);
             SyncFaceCollector();
             previewValid = true;
@@ -207,7 +242,7 @@ namespace NXRefine.UI
             catch (InvalidOperationException) { return false; }
         }
 
-        private Face[][] FindGroups(Body body, double maximumRadius)
+        private Face[][] FindGroups(Body body, Face[] selectedSeeds, double maximumRadius)
         {
             Face[] allFaces = body.GetFaces();
             var faces = allFaces.ToDictionary(face => face.Tag);
@@ -222,34 +257,35 @@ namespace NXRefine.UI
                         adjacency[touching[j].Tag].Add(touching[i].Tag);
                     }
             }
-            var seeds = new List<HoleSeed>();
-            foreach (Face face in allFaces)
+            var selectedTags = new HashSet<Tag>(selectedSeeds
+                .Where(face => face.GetBody() != null && face.GetBody().Tag == body.Tag)
+                .Select(face => face.Tag));
+            var holeSeeds = new List<HoleSeed>();
+            foreach (Face face in allFaces.Where(face => selectedTags.Contains(face.Tag)))
             {
                 HoleSeed seed;
                 if (TryGetInnerCylinder(face, body, out seed) &&
                     (maximumRadius == 0.0 || seed.Radius <= maximumRadius))
-                    seeds.Add(seed);
+                    holeSeeds.Add(seed);
             }
             var result = new List<Face[]>();
-            var seen = new HashSet<Tag>();
-            foreach (HoleSeed seed in seeds)
+            var seenCandidates = new HashSet<Tag>();
+            foreach (HoleSeed seed in holeSeeds)
             {
-                if (seen.Contains(seed.Face.Tag)) continue;
-                var component = new List<Face>();
-                var queue = new Queue<Tag>();
-                queue.Enqueue(seed.Face.Tag);
-                while (queue.Count > 0)
-                {
-                    Tag tag = queue.Dequeue();
-                    if (!seen.Add(tag)) continue;
-                    component.Add(faces[tag]);
-                    foreach (Tag next in adjacency[tag])
-                    {
-                        if (seen.Contains(next)) continue;
-                        Face neighbor = faces[next];
-                        if (IsCavityFacing(neighbor, seed.VoidPoint)) queue.Enqueue(next);
-                    }
-                }
+                if (seenCandidates.Contains(seed.Face.Tag)) continue;
+                // The native collector normally returns the whole Boss and
+                // Pocket Faces region.  Use that exact connected selection as
+                // the preferred boundary, then intersect it with the
+                // cavity-facing region derived from the selected inner ring.
+                // If NX returns only the seed face, the geometric fallback
+                // still expands the same hole without scanning unrelated body
+                // faces.
+                HashSet<Tag> nativeRegion = ConnectedSelection(seed.Face.Tag, selectedTags, adjacency);
+                List<Face> cavityRegion = ExpandCavityRegion(seed, faces, adjacency);
+                var component = nativeRegion.Count > 1
+                    ? cavityRegion.Where(face => nativeRegion.Contains(face.Tag)).ToList()
+                    : cavityRegion;
+                if (component.Count == 0) continue;
                 // A stepped/counterbored hole is one connected region. Its
                 // largest inner cylindrical radius must satisfy the limit.
                 if (maximumRadius > 0.0 && component.Any(face =>
@@ -257,9 +293,50 @@ namespace NXRefine.UI
                     HoleSeed inner;
                     return TryGetInnerCylinder(face, body, out inner) && inner.Radius > maximumRadius;
                 })) continue;
-                result.Add(component.ToArray());
+                Face[] group = component.GroupBy(face => face.Tag).Select(faceGroup => faceGroup.First()).ToArray();
+                result.Add(group);
+                foreach (Face face in group) seenCandidates.Add(face.Tag);
             }
             return result.ToArray();
+        }
+
+        private HashSet<Tag> ConnectedSelection(Tag start, HashSet<Tag> selectedTags,
+            Dictionary<Tag, HashSet<Tag>> adjacency)
+        {
+            var connected = new HashSet<Tag>();
+            if (!selectedTags.Contains(start)) return connected;
+            var queue = new Queue<Tag>();
+            queue.Enqueue(start);
+            while (queue.Count > 0)
+            {
+                Tag tag = queue.Dequeue();
+                if (!connected.Add(tag)) continue;
+                foreach (Tag next in adjacency[tag])
+                    if (selectedTags.Contains(next) && !connected.Contains(next)) queue.Enqueue(next);
+            }
+            return connected;
+        }
+
+        private List<Face> ExpandCavityRegion(HoleSeed seed, Dictionary<Tag, Face> faces,
+            Dictionary<Tag, HashSet<Tag>> adjacency)
+        {
+            var component = new List<Face>();
+            var seen = new HashSet<Tag>();
+            var queue = new Queue<Tag>();
+            queue.Enqueue(seed.Face.Tag);
+            while (queue.Count > 0)
+            {
+                Tag tag = queue.Dequeue();
+                if (!seen.Add(tag)) continue;
+                component.Add(faces[tag]);
+                foreach (Tag next in adjacency[tag])
+                {
+                    if (seen.Contains(next)) continue;
+                    Face neighbor = faces[next];
+                    if (IsCavityFacing(neighbor, seed.VoidPoint)) queue.Enqueue(next);
+                }
+            }
+            return component;
         }
 
         private bool TryGetInnerCylinder(Face face, Body body, out HoleSeed seed)
@@ -402,6 +479,10 @@ namespace NXRefine.UI
             var retainedTags = new HashSet<Tag>(faces.Select(face => face.Tag));
             Tag[] excludedTags = groups.SelectMany(group => group).Select(face => face.Tag)
                 .Where(tag => !retainedTags.Contains(tag)).Distinct().ToArray();
+            // The native seed collector may keep its own selection highlight
+            // (including faces that the safety filter rejected).  Clear that
+            // display first, then paint only the exact pending delete set.
+            SetHighlights(seeds.Keys.ToArray(), 0);
             SetHighlights(excludedTags, 0);
             SetHighlights(retainedTags.ToArray(), 1);
             context.UF.Disp.Refresh();
@@ -410,6 +491,7 @@ namespace NXRefine.UI
         private void ClearPreview()
         {
             SetHighlights(groups.SelectMany(group => group).Select(face => face.Tag).Distinct().ToArray(), 0);
+            SetHighlights(seeds.Keys.ToArray(), 0);
             context.UF.Disp.Refresh();
         }
 
@@ -433,10 +515,12 @@ namespace NXRefine.UI
             try
             {
                 if (bodySelect != null) bodySelect.SetSelectedObjects(new TaggedObject[0]);
+                if (seedSelect != null) seedSelect.SetSelectedObjects(new TaggedObject[0]);
                 if (faceSelect != null) faceSelect.SetSelectedObjects(new TaggedObject[0]);
                 context.UI.SelectionManager.ClearGlobalSelectionList();
                 ClearPreview();
                 bodies.Clear();
+                seeds.Clear();
                 groups.Clear();
                 retained.Clear();
             }
