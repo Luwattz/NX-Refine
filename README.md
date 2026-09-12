@@ -12,6 +12,7 @@ NX Refine is an open-source Siemens NX add-on for geometry validation, defeaturi
 | Simplify | Remove Blends | Recognizes blend faces and removes those with radius at or below the configured threshold. |
 | Simplify | Fill Holes | Opens a native preview dialog for one or more target entities, automatic inner-hole seeds expanded by NX's Boss and Pocket Faces rule, a maximum hole radius, and a reviewable candidate-face collector. |
 | Simplify | Clear Cavities | Opens a native preview dialog for one or more solid bodies, detects face shells that are fully enclosed and disconnected from the outside, and lets you review or exclude cavity groups before healing them. |
+| Repair | Repair Unattached Faces | Opens a native preview dialog for one or more solid bodies, finds non-adjacent faces whose minimum separation is within the selected gap tolerance, and repairs retained gaps with native Sew or Delete Face/Heal operations. |
 | Simplify | Remove Markings | Select one or more carrier faces, automatically add their connected candidate groups to the same collector, exclude groups, then Apply or OK to delete and heal retained candidates. Works without feature history; candidates require review. |
 | Repair | Repair Sheets | Sews sheet bodies with the configured tolerance and optimizes output faces. |
 | Repair | Patch Openings | Detects and highlights open sheet boundaries. Automatic surface reconstruction is preview-only in v0.1. |
@@ -128,12 +129,22 @@ Clear Cavities uses an NX native Block Styler dialog with OK / Apply / Cancel na
 
 This is a topology-based enclosed-shell detector, not a semantic recognition system. Imported or non-manifold bodies, self-intersecting faces, and cavities represented by a single connected exterior component may need manual review. The command does not delete the selected body itself, and a failed healing pass is rolled back.
 
+### Repair Unattached Faces workflow
+
+Repair Unattached Faces uses an NX native Block Styler dialog with OK / Apply / Cancel navigation.
+
+1. Select one or more solid bodies in **Target entities**. The command compares only faces that are not already joined by a common edge. A broad-phase bounding-box test and NX minimum-distance measurement limit candidates to the entered **Maximum gap (part units)**. The initial value follows **Settings > Sew tolerance**.
+2. Review the **Unattached faces to repair** collector. Both sides of each detected gap are highlighted. Candidate pairs that share a face are grouped together; deselecting any face removes the complete connected group from the pending repair.
+3. **Apply** repairs retained groups and leaves the dialog open; **OK** repairs and closes. **Cancel** or Escape clears the preview. Separate solid bodies use NX's native solid Sew operation. Gaps between faces in the same body use native Delete Face with Heal on the smaller face, allowing surrounding faces to close the gap. Each pass is protected by one NX undo mark.
+
+This is a geometric proximity detector, not an intent recognizer. Deliberate clearances, thin walls, and nearby faces from different design features can qualify and must be reviewed before Apply/OK. Very large selections or tolerances may require a narrower scope; the scan logs a warning if its close-pair safety limit is reached. A failed repair pass is rolled back.
+
 ## Known limitations
 
 - Hole detection starts from automatically detected inner cylindrical seeds and evaluates native Boss and Pocket Faces rules; imported bosses, partial cylinders, and unusual face orientations can still require manual review.
 - Small-face deletion is heuristic and may fail when adjacent surfaces cannot be extended safely.
 - `Repair Sheets` currently operates on all sheet bodies in the work part.
-- Patterned-face replacement and missing-face surface reconstruction require topology-aware algorithms planned for later releases. Clear Cavities currently targets fully enclosed face shells; open pockets remain available through Fill Holes or native Delete Face workflows.
+- Patterned-face replacement and missing-face surface reconstruction require topology-aware algorithms planned for later releases. Clear Cavities currently targets fully enclosed face shells; open pockets remain available through Fill Holes or native Delete Face workflows. Repair Unattached Faces is intentionally conservative around non-manifold and deliberately clear geometry.
 - The project does not redistribute Siemens NX assemblies or documentation.
 
 See [Architecture](docs/ARCHITECTURE.md) for implementation details and the roadmap.

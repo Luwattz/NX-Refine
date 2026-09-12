@@ -1,0 +1,790 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using NXOpen;
+using NXOpen.BlockStyler;
+using NXOpen.Features;
+using NXOpen.UF;
+using NXRefine.Core;
+using SelectObject = NXOpen.BlockStyler.SelectObject;
+
+namespace NXRefine.UI
+{
+    // Native Block Styler workflow for finding faces that are close in space but
+    // not joined by topology. Separate solid bodies are repaired with native
+    // Sew; gaps inside one body use native Delete Face/Heal on the smaller
+    // face so that the surrounding faces can close the gap.
+    internal sealed class UnattachedFacesDialog : IDisposable
+    {
+        private const int MaximumPairChecks = 1000000;
+
+        private readonly NxContext context;
+        private readonly CleanupSettings settings;
+        private readonly BlockDialog dialog;
+        private readonly System.Windows.Forms.Timer gapTimer;
+        private readonly System.Windows.Forms.Timer previewTimer;
+        private SelectObject bodySelect;
+        private StringBlock maxGap;
+        private FaceCollector faceSelect;
+        private string gapText;
+        private double activeGap;
+        private readonly Dictionary<Tag, Body> bodies = new Dictionary<Tag, Body>();
+        private readonly Dictionary<Tag, FaceInfo> faces = new Dictionary<Tag, FaceInfo>();
+        private readonly List<GapGroup> groups = new List<GapGroup>();
+        private readonly HashSet<Tag> retained = new HashSet<Tag>();
+        private bool previewValid;
+        private bool updating;
+        private bool ready;
+
+        public UnattachedFacesDialog(NxContext context, CleanupSettings settings)
+        {
+            this.context = context;
+            this.settings = settings;
+            context.RequireWorkPart();
+            string path = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location),
+                "NXRefine.RepairUnattached.dlx");
+            dialog = context.UI.CreateDialog(path);
+            dialog.AddInitializeHandler(Initialize);
+            dialog.AddUpdateHandler(Update);
+            dialog.AddApplyHandler(Apply);
+            dialog.AddOkHandler(Apply);
+            dialog.AddCancelHandler(Cancel);
+            dialog.AddFocusNotifyHandler(FocusChanged);
+            dialog.AddKeyboardFocusNotifyHandler(KeyboardFocusChanged);
+            dialog.AddEnableOKButtonHandler(CanApply);
+            gapTimer = new System.Windows.Forms.Timer { Interval = 200 };
+            gapTimer.Tick += RefreshGap;
+            previewTimer = new System.Windows.Forms.Timer { Interval = 50 };
+            previewTimer.Tick += RefreshPreview;
+        }
+
+        public void ShowDialog()
+        {
+            try { dialog.Launch(); }
+            finally
+            {
+                gapTimer.Stop();
+                previewTimer.Stop();
+                try { ClearPreview(); }
+                catch (Exception ex) { context.Log("Repair Unattached Faces preview cleanup: " + ex); }
+                try { context.UI.SelectionManager.ClearGlobalSelectionList(); }
+                catch (Exception ex) { context.Log("Repair Unattached Faces selection cleanup: " + ex); }
+                ready = false;
+            }
+        }
+
+        private void Initialize()
+        {
+            bodySelect = (SelectObject)dialog.TopBlock.FindBlock("bodies");
+            bodySelect.AddFilter(SelectObject.FilterType.SolidBodies);
+            bodySelect.SelectModeAsString = "Multiple";
+            bodySelect.MaximumScopeAsString = "Within Work Part Only";
+
+            maxGap = (StringBlock)dialog.TopBlock.FindBlock("maxGap");
+            gapText = settings.SewTolerance.ToString("0.########", CultureInfo.InvariantCulture);
+            maxGap.RetainValue = false;
+            maxGap.Value = gapText;
+            maxGap.SetKeystrokeCallback(GapEdited);
+
+            faceSelect = (FaceCollector)dialog.TopBlock.FindBlock("faces");
+            faceSelect.EntityType = 16; // Faces
+            faceSelect.MaximumScopeAsString = "Within Work Part Only";
+            faceSelect.FaceRules = 1; // Single Face; connected candidate grouping is handled by the model
+            faceSelect.DefaultFaceRulesAsString = "Single Face";
+            faceSelect.PopupMenuEnabled = true;
+
+            activeGap = ReadMaximumGap();
+            ready = true;
+        }
+
+        private int Update(UIBlock block)
+        {
+            if (updating) return 0;
+            try
+            {
+                updating = true;
+                string blockName = block == null ? string.Empty : block.Name;
+                if (blockName == "maxGap" && previewValid && !gapTimer.Enabled && ReadMaximumGap() == activeGap)
+                    return 0;
+                if (blockName == "maxGap") RebuildCandidates();
+                else if (blockName == "bodies") UpdateBodies();
+                else if (blockName == "faces") UpdateFaceSelection();
+                Preview();
+                QueuePreviewRefresh();
+                return 0;
+            }
+            catch (Exception ex) { return Error(ex); }
+            finally { updating = false; }
+        }
+
+        private void UpdateBodies()
+        {
+            Body[] selected = bodySelect.GetSelectedObjects().OfType<Body>()
+                .Where(body => !body.IsOccurrence && body.IsSolidBody)
+                .GroupBy(body => body.Tag).Select(group => group.First()).ToArray();
+            var selectedTags = new HashSet<Tag>(selected.Select(body => body.Tag));
+            if (selectedTags.SetEquals(bodies.Keys)) return;
+            ClearPreview();
+            bodies.Clear();
+            foreach (Body body in selected) bodies[body.Tag] = body;
+            RebuildCandidates();
+        }
+
+        private void UpdateFaceSelection()
+        {
+            var selectedTags = new HashSet<Tag>(faceSelect.GetSelectedObjects().OfType<Face>()
+                .Select(face => face.Tag));
+            retained.Clear();
+            // A candidate gap is a connected group. Deselecting one face
+            // removes the complete group from the pending repair.
+            foreach (GapGroup group in groups.Where(item => item.Faces.All(face => selectedTags.Contains(face.Tag))))
+                foreach (Face face in group.Faces) retained.Add(face.Tag);
+            SyncFaceCollector();
+            previewValid = groups.Count > 0;
+        }
+
+        private void RebuildCandidates()
+        {
+            gapTimer.Stop();
+            previewTimer.Stop();
+            previewValid = false;
+            ClearPreview();
+            faces.Clear();
+            groups.Clear();
+            retained.Clear();
+            if (faceSelect != null) faceSelect.SetSelectedObjects(new TaggedObject[0]);
+            activeGap = ReadMaximumGap();
+
+            foreach (Body body in bodies.Values) AddBodyFaces(body);
+            BuildTopologicalAdjacency();
+            groups.AddRange(FindGapGroups());
+            foreach (Face face in groups.SelectMany(group => group.Faces)) retained.Add(face.Tag);
+            SyncFaceCollector();
+            previewValid = groups.Count > 0;
+        }
+
+        private double ReadMaximumGap()
+        {
+            double value;
+            if ((!double.TryParse(gapText, NumberStyles.Float, CultureInfo.CurrentCulture, out value) &&
+                 !double.TryParse(gapText, NumberStyles.Float, CultureInfo.InvariantCulture, out value)) ||
+                double.IsNaN(value) || double.IsInfinity(value) || value < 0.0 || value > 100000.0)
+                throw new InvalidOperationException(
+                    "Enter a non-negative maximum gap in the current part units (for example, 0.05). ");
+            return value;
+        }
+
+        private int GapEdited(StringBlock block, string uncommittedValue)
+        {
+            if (!ready || updating || gapText == uncommittedValue) return 0;
+            gapText = uncommittedValue;
+            gapTimer.Stop();
+            previewTimer.Stop();
+            previewValid = false;
+            updating = true;
+            try
+            {
+                ClearPreview();
+                faces.Clear();
+                groups.Clear();
+                retained.Clear();
+                if (faceSelect != null) faceSelect.SetSelectedObjects(new TaggedObject[0]);
+                gapTimer.Start();
+            }
+            catch (Exception ex) { Error(ex); }
+            finally { updating = false; }
+            return 0;
+        }
+
+        private void RefreshGap(object sender, EventArgs args)
+        {
+            gapTimer.Stop();
+            if (!ready || updating) return;
+            try
+            {
+                if (Update(maxGap) == 0 && previewValid)
+                {
+                    faceSelect.Focus();
+                    Preview();
+                    QueuePreviewRefresh();
+                }
+            }
+            catch (Exception ex) { Error(ex); }
+        }
+
+        private void AddBodyFaces(Body body)
+        {
+            foreach (Face face in body.GetFaces())
+            {
+                FaceInfo info;
+                if (TryGetFaceInfo(body, face, out info)) faces[face.Tag] = info;
+            }
+        }
+
+        private bool TryGetFaceInfo(Body body, Face face, out FaceInfo info)
+        {
+            info = null;
+            try
+            {
+                double[] box = new double[6];
+                context.UF.Modl.AskBoundingBox(face.Tag, box);
+                double[] point;
+                double[] normal;
+                TryGetFacePointNormal(face, out point, out normal);
+                info = new FaceInfo(body, face, box, point, normal);
+                return true;
+            }
+            catch (NXException)
+            {
+                return false;
+            }
+        }
+
+        private void BuildTopologicalAdjacency()
+        {
+            foreach (Body body in bodies.Values)
+            {
+                foreach (Edge edge in body.GetEdges())
+                {
+                    Face[] touching = edge.GetFaces()
+                        .Where(face => faces.ContainsKey(face.Tag))
+                        .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
+                    for (int i = 0; i < touching.Length; i++)
+                        for (int j = i + 1; j < touching.Length; j++)
+                        {
+                            faces[touching[i].Tag].Adjacent.Add(touching[j].Tag);
+                            faces[touching[j].Tag].Adjacent.Add(touching[i].Tag);
+                        }
+                }
+            }
+        }
+
+        private GapGroup[] FindGapGroups()
+        {
+            FaceInfo[] sorted = faces.Values.OrderBy(info => info.Box[0]).ThenBy(info => info.Box[1])
+                .ThenBy(info => info.Box[2]).ToArray();
+            var pairs = new List<GapPair>();
+            int checks = 0;
+            bool limitReached = false;
+            double searchTolerance = Math.Max(activeGap, 1e-9);
+
+            for (int i = 0; i < sorted.Length && !limitReached; i++)
+            {
+                FaceInfo first = sorted[i];
+                for (int j = i + 1; j < sorted.Length; j++)
+                {
+                    FaceInfo second = sorted[j];
+                    if (second.Box[0] > first.Box[3] + searchTolerance) break;
+                    if (++checks > MaximumPairChecks)
+                    {
+                        limitReached = true;
+                        context.Log("Repair Unattached Faces stopped after " + MaximumPairChecks +
+                            " close-pair checks; use a smaller gap tolerance or select fewer bodies.");
+                        break;
+                    }
+                    if (first.Body.Tag == second.Body.Tag && first.Adjacent.Contains(second.Face.Tag)) continue;
+                    if (!BoxesWithin(first.Box, second.Box, searchTolerance)) continue;
+                    if (!NormalsCompatible(first.Normal, second.Normal)) continue;
+
+                    GapPair pair;
+                    if (TryMeasureGap(first, second, out pair)) pairs.Add(pair);
+                }
+            }
+
+            if (pairs.Count == 0) return new GapGroup[0];
+            var index = new Dictionary<Tag, int>();
+            foreach (GapPair pair in pairs)
+            {
+                if (!index.ContainsKey(pair.First.Face.Tag)) index[pair.First.Face.Tag] = index.Count;
+                if (!index.ContainsKey(pair.Second.Face.Tag)) index[pair.Second.Face.Tag] = index.Count;
+            }
+            var union = new UnionFind(index.Count);
+            foreach (GapPair pair in pairs) union.Join(index[pair.First.Face.Tag], index[pair.Second.Face.Tag]);
+
+            var byRoot = new Dictionary<int, List<GapPair>>();
+            foreach (GapPair pair in pairs)
+            {
+                int root = union.Find(index[pair.First.Face.Tag]);
+                List<GapPair> list;
+                if (!byRoot.TryGetValue(root, out list))
+                {
+                    list = new List<GapPair>();
+                    byRoot.Add(root, list);
+                }
+                list.Add(pair);
+            }
+
+            var result = new List<GapGroup>();
+            foreach (List<GapPair> pairList in byRoot.Values)
+            {
+                Face[] groupFaces = pairList.SelectMany(pair => new[] { pair.First.Face, pair.Second.Face })
+                    .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
+                result.Add(new GapGroup(groupFaces, pairList.ToArray()));
+            }
+            context.Log("Repair Unattached Faces: " + result.Count + " candidate gap groups, " +
+                pairs.Count + " close face pairs in " + faces.Count + " scanned faces.");
+            return result.OrderBy(group => group.Faces.Min(face => face.Tag.ToString()), StringComparer.Ordinal).ToArray();
+        }
+
+        private bool TryMeasureGap(FaceInfo first, FaceInfo second, out GapPair pair)
+        {
+            pair = null;
+            double distance;
+            double accuracy;
+            double[] pointFirst = new double[3];
+            double[] pointSecond = new double[3];
+            double[] guessFirst = first.Point ?? first.Center;
+            double[] guessSecond = second.Point ?? second.Center;
+            try
+            {
+                context.UF.Modl.AskMinimumDist3(2, first.Face.Tag, second.Face.Tag, 1, guessFirst,
+                    1, guessSecond, out distance, pointFirst, pointSecond, out accuracy);
+            }
+            catch (NXException)
+            {
+                try
+                {
+                    context.UF.Modl.AskMinimumDist(first.Face.Tag, second.Face.Tag, 1, guessFirst,
+                        1, guessSecond, out distance, pointFirst, pointSecond);
+                    accuracy = 0.0;
+                }
+                catch (NXException) { return false; }
+            }
+            if (double.IsNaN(distance) || double.IsInfinity(distance) || distance < 0.0) return false;
+            if (double.IsNaN(accuracy) || double.IsInfinity(accuracy) || accuracy < 0.0) accuracy = 0.0;
+            if (distance > activeGap + accuracy) return false;
+
+            // For separate bodies, normalize target/tool orientation so a
+            // connected candidate is repaired in one deterministic sew.
+            if (first.Body.Tag != second.Body.Tag &&
+                StringComparer.Ordinal.Compare(first.Body.Tag.ToString(), second.Body.Tag.ToString()) > 0)
+            {
+                FaceInfo swap = first;
+                first = second;
+                second = swap;
+                double[] swapPoint = pointFirst;
+                pointFirst = pointSecond;
+                pointSecond = swapPoint;
+            }
+            pair = new GapPair(first, second, distance, pointFirst, pointSecond);
+            return true;
+        }
+
+        private static bool BoxesWithin(double[] first, double[] second, double tolerance)
+        {
+            double x = AxisGap(first[0], first[3], second[0], second[3]);
+            double y = AxisGap(first[1], first[4], second[1], second[4]);
+            double z = AxisGap(first[2], first[5], second[2], second[5]);
+            return x * x + y * y + z * z <= tolerance * tolerance;
+        }
+
+        private static double AxisGap(double firstMin, double firstMax, double secondMin, double secondMax)
+        {
+            if (firstMax < secondMin) return secondMin - firstMax;
+            if (secondMax < firstMin) return firstMin - secondMax;
+            return 0.0;
+        }
+
+        private static bool NormalsCompatible(double[] first, double[] second)
+        {
+            if (first == null || second == null) return true;
+            double lengthFirst = Length(first);
+            double lengthSecond = Length(second);
+            if (lengthFirst < 1e-9 || lengthSecond < 1e-9) return true;
+            double dot = Math.Abs((first[0] * second[0] + first[1] * second[1] + first[2] * second[2]) /
+                (lengthFirst * lengthSecond));
+            // Near-contact surfaces are normally parallel or gently angled.
+            // Keep a low threshold so sloped rib/base contacts are retained.
+            return dot >= 0.2;
+        }
+
+        private static double Length(double[] vector)
+        {
+            return Math.Sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
+        }
+
+        private bool TryGetFacePointNormal(Face face, out double[] point, out double[] normal)
+        {
+            point = null;
+            normal = null;
+            try
+            {
+                double[] box = new double[6];
+                context.UF.Modl.AskBoundingBox(face.Tag, box);
+                double[] reference = {
+                    (box[0] + box[3]) * 0.5,
+                    (box[1] + box[4]) * 0.5,
+                    (box[2] + box[5]) * 0.5 };
+                double[] parameter = new double[2];
+                point = new double[3];
+                context.UF.Modl.AskFaceParm(face.Tag, reference, parameter, point);
+                double[] u1 = new double[3];
+                double[] v1 = new double[3];
+                double[] u2 = new double[3];
+                double[] v2 = new double[3];
+                double[] radii = new double[2];
+                normal = new double[3];
+                context.UF.Modl.AskFaceProps(face.Tag, parameter, point, u1, v1, u2, v2, normal, radii);
+                if (Length(normal) < 1e-9)
+                {
+                    point = null;
+                    normal = null;
+                    return false;
+                }
+                return true;
+            }
+            catch (NXException)
+            {
+                point = null;
+                normal = null;
+                return false;
+            }
+        }
+
+        private void SyncFaceCollector()
+        {
+            if (faceSelect == null) return;
+            faceSelect.SetSelectedObjects(RetainedFaces().Cast<TaggedObject>().ToArray());
+        }
+
+        private Face[] RetainedFaces()
+        {
+            return groups.SelectMany(group => group.Faces).Where(face => retained.Contains(face.Tag)).ToArray();
+        }
+
+        private bool CanApply()
+        {
+            if (!ready || updating || !previewValid || gapTimer.Enabled || retained.Count == 0) return false;
+            try { return ReadMaximumGap() == activeGap; }
+            catch (InvalidOperationException) { return false; }
+        }
+
+        private void FocusChanged(UIBlock block, bool isFocus)
+        {
+            if (isFocus && ready && !updating)
+            {
+                Preview();
+                QueuePreviewRefresh();
+            }
+        }
+
+        private void KeyboardFocusChanged(UIBlock block, bool isFocus)
+        {
+            if (isFocus && ready && !updating && previewValid)
+            {
+                Preview();
+                QueuePreviewRefresh();
+            }
+        }
+
+        private void QueuePreviewRefresh()
+        {
+            if (!ready) return;
+            previewTimer.Stop();
+            previewTimer.Start();
+        }
+
+        private void RefreshPreview(object sender, EventArgs args)
+        {
+            previewTimer.Stop();
+            if (ready && !updating) Preview();
+        }
+
+        private void Preview()
+        {
+            Face[] candidateFaces = groups.SelectMany(group => group.Faces).ToArray();
+            var candidateTags = new HashSet<Tag>(candidateFaces.Select(face => face.Tag));
+            var retainedTags = new HashSet<Tag>(RetainedFaces().Select(face => face.Tag));
+            SetHighlights(candidateTags.ToArray(), 0);
+            SetHighlights(bodies.Keys.ToArray(), 0);
+            SetHighlights(retainedTags.ToArray(), 1);
+            context.UF.Disp.Refresh();
+        }
+
+        private void ClearPreview()
+        {
+            SetHighlights(groups.SelectMany(group => group.Faces).Select(face => face.Tag).Distinct().ToArray(), 0);
+            SetHighlights(bodies.Keys.ToArray(), 0);
+            context.UF.Disp.Refresh();
+        }
+
+        private void SetHighlights(Tag[] tags, int highlight)
+        {
+            if (tags == null || tags.Length == 0) return;
+            try { context.UF.Disp.SetHighlights(tags.Length, tags, highlight); }
+            catch (NXException)
+            {
+                foreach (Tag tag in tags)
+                    try { context.UF.Disp.SetHighlight(tag, highlight); } catch (NXException) { }
+            }
+        }
+
+        private void Reset()
+        {
+            gapTimer.Stop();
+            previewTimer.Stop();
+            previewValid = false;
+            updating = true;
+            try
+            {
+                if (bodySelect != null) bodySelect.SetSelectedObjects(new TaggedObject[0]);
+                if (faceSelect != null) faceSelect.SetSelectedObjects(new TaggedObject[0]);
+                context.UI.SelectionManager.ClearGlobalSelectionList();
+                ClearPreview();
+                bodies.Clear();
+                faces.Clear();
+                groups.Clear();
+                retained.Clear();
+            }
+            finally { updating = false; }
+        }
+
+        private int Cancel()
+        {
+            Reset();
+            ready = false;
+            return 0;
+        }
+
+        private int Apply()
+        {
+            if (!ready || !previewValid || gapTimer.Enabled || retained.Count == 0) return 1;
+            try
+            {
+                if (ReadMaximumGap() != activeGap) return 1;
+            }
+            catch (InvalidOperationException) { return 1; }
+
+            GapGroup[] selected = groups.Where(group => group.Faces.All(face => retained.Contains(face.Tag))).ToArray();
+            if (selected.Length == 0) return 1;
+            Session.UndoMarkId mark = context.Session.SetUndoMark(Session.MarkVisibility.Visible,
+                "NX Refine - Repair Unattached Faces");
+            try
+            {
+                RepairSelectedGroups(selected);
+                Reset();
+                context.Log("Repaired " + selected.Length + " unattached face groups.");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                context.Session.UndoToMark(mark, "NX Refine - Repair Unattached Faces");
+                return Error(ex);
+            }
+            finally { context.UF.Disp.Refresh(); }
+        }
+
+        private void RepairSelectedGroups(IEnumerable<GapGroup> selectedGroups)
+        {
+            var sameBodyFaces = new Dictionary<Tag, Dictionary<Tag, Face>>();
+            var crossBodyPairs = new Dictionary<string, List<GapPair>>();
+            foreach (GapGroup group in selectedGroups)
+            {
+                foreach (GapPair pair in group.Pairs)
+                {
+                    if (pair.First.Body.Tag == pair.Second.Body.Tag)
+                    {
+                        Face source = SmallerFace(pair.First, pair.Second);
+                        Dictionary<Tag, Face> bodyFaces;
+                        if (!sameBodyFaces.TryGetValue(pair.First.Body.Tag, out bodyFaces))
+                        {
+                            bodyFaces = new Dictionary<Tag, Face>();
+                            sameBodyFaces.Add(pair.First.Body.Tag, bodyFaces);
+                        }
+                        bodyFaces[source.Tag] = source;
+                    }
+                    else
+                    {
+                        string key = pair.First.Body.Tag + "|" + pair.Second.Body.Tag;
+                        List<GapPair> pairs;
+                        if (!crossBodyPairs.TryGetValue(key, out pairs))
+                        {
+                            pairs = new List<GapPair>();
+                            crossBodyPairs.Add(key, pairs);
+                        }
+                        pairs.Add(pair);
+                    }
+                }
+            }
+
+            foreach (List<GapPair> pairs in crossBodyPairs.Values) SewFaces(pairs);
+            foreach (KeyValuePair<Tag, Dictionary<Tag, Face>> item in sameBodyFaces)
+                DeleteAndHealFaces(item.Value.Values.ToArray());
+        }
+
+        private static Face SmallerFace(FaceInfo first, FaceInfo second)
+        {
+            return ApproximateFaceSize(first.Box) <= ApproximateFaceSize(second.Box) ? first.Face : second.Face;
+        }
+
+        private static double ApproximateFaceSize(double[] box)
+        {
+            double x = Math.Max(0.0, box[3] - box[0]);
+            double y = Math.Max(0.0, box[4] - box[1]);
+            double z = Math.Max(0.0, box[5] - box[2]);
+            return x * y + y * z + z * x;
+        }
+
+        private void SewFaces(IList<GapPair> pairs)
+        {
+            Face[] targets = pairs.Select(pair => pair.First.Face).GroupBy(face => face.Tag)
+                .Select(group => group.First()).ToArray();
+            Face[] tools = pairs.Select(pair => pair.Second.Face).GroupBy(face => face.Tag)
+                .Select(group => group.First()).ToArray();
+            if (targets.Length == 0 || tools.Length == 0) return;
+
+            SewBuilder builder = null;
+            try
+            {
+                builder = context.WorkPart.Features.CreateSewBuilder(null);
+                builder.Type = SewBuilder.Types.Solid;
+                builder.Tolerance = activeGap;
+                builder.BodyPreference = SewBuilder.BodyPreferenceTypes.Solid;
+                builder.IsCommonFacesSearched = true;
+                builder.OptimizeFaces = true;
+                builder.TargetFaces.Add(targets);
+                builder.ToolFaces.Add(tools);
+                builder.CommitFeature();
+            }
+            finally
+            {
+                if (builder != null) builder.Destroy();
+            }
+        }
+
+        private void DeleteAndHealFaces(Face[] facesToHeal)
+        {
+            if (facesToHeal == null || facesToHeal.Length == 0) return;
+            DeleteFaceBuilder builder = null;
+            try
+            {
+                builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
+                builder.Type = DeleteFaceBuilder.SelectTypes.Face;
+                builder.Heal = true;
+                FaceDumbRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(facesToHeal);
+                builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
+                builder.CommitFeature();
+            }
+            finally
+            {
+                if (builder != null) builder.Destroy();
+            }
+        }
+
+        private int Error(Exception ex)
+        {
+            gapTimer.Stop();
+            previewTimer.Stop();
+            previewValid = false;
+            ClearPreview();
+            context.Log(ex.ToString());
+            return 1;
+        }
+
+        public void Dispose()
+        {
+            gapTimer.Stop();
+            gapTimer.Dispose();
+            previewTimer.Stop();
+            previewTimer.Dispose();
+            try { ClearPreview(); }
+            catch (Exception ex) { context.Log("Repair Unattached Faces preview cleanup: " + ex); }
+            try { context.UI.SelectionManager.ClearGlobalSelectionList(); }
+            catch (Exception ex) { context.Log("Repair Unattached Faces selection cleanup: " + ex); }
+            try { dialog.Dispose(); }
+            finally
+            {
+                try { context.UI.SelectionManager.ClearGlobalSelectionList(); }
+                catch (Exception ex) { context.Log("Repair Unattached Faces selection cleanup: " + ex); }
+            }
+        }
+
+        private sealed class FaceInfo
+        {
+            public FaceInfo(Body body, Face face, double[] box, double[] point, double[] normal)
+            {
+                Body = body;
+                Face = face;
+                Box = box;
+                Point = point;
+                Normal = normal;
+                Center = new[] { (box[0] + box[3]) * 0.5, (box[1] + box[4]) * 0.5, (box[2] + box[5]) * 0.5 };
+                Adjacent = new HashSet<Tag>();
+            }
+
+            public Body Body { get; private set; }
+            public Face Face { get; private set; }
+            public double[] Box { get; private set; }
+            public double[] Point { get; private set; }
+            public double[] Normal { get; private set; }
+            public double[] Center { get; private set; }
+            public HashSet<Tag> Adjacent { get; private set; }
+        }
+
+        private sealed class GapPair
+        {
+            public GapPair(FaceInfo first, FaceInfo second, double distance, double[] pointFirst, double[] pointSecond)
+            {
+                First = first;
+                Second = second;
+                Distance = distance;
+                PointFirst = pointFirst;
+                PointSecond = pointSecond;
+            }
+
+            public FaceInfo First { get; private set; }
+            public FaceInfo Second { get; private set; }
+            public double Distance { get; private set; }
+            public double[] PointFirst { get; private set; }
+            public double[] PointSecond { get; private set; }
+        }
+
+        private sealed class GapGroup
+        {
+            public GapGroup(Face[] faces, GapPair[] pairs)
+            {
+                Faces = faces;
+                Pairs = pairs;
+            }
+
+            public Face[] Faces { get; private set; }
+            public GapPair[] Pairs { get; private set; }
+        }
+
+        private sealed class UnionFind
+        {
+            private readonly int[] parent;
+            private readonly byte[] rank;
+
+            public UnionFind(int count)
+            {
+                parent = Enumerable.Range(0, count).ToArray();
+                rank = new byte[count];
+            }
+
+            public int Find(int value)
+            {
+                if (parent[value] == value) return value;
+                parent[value] = Find(parent[value]);
+                return parent[value];
+            }
+
+            public void Join(int first, int second)
+            {
+                int rootFirst = Find(first);
+                int rootSecond = Find(second);
+                if (rootFirst == rootSecond) return;
+                if (rank[rootFirst] < rank[rootSecond]) parent[rootFirst] = rootSecond;
+                else if (rank[rootFirst] > rank[rootSecond]) parent[rootSecond] = rootFirst;
+                else
+                {
+                    parent[rootSecond] = rootFirst;
+                    rank[rootFirst]++;
+                }
+            }
+        }
+    }
+}

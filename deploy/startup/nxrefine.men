@@ -28,6 +28,12 @@ MESSAGE Select solid bodies to find fully enclosed internal cavities, review the
 BITMAP hole
 ACTIONS NXRefine.ClearCavities.dll
 
+BUTTON NX_REFINE_REPAIR_UNATTACHED
+LABEL Repair Unattached Faces
+MESSAGE Select solid bodies to find small gaps between faces, review the highlighted pairs, and repair selected gaps.
+BITMAP sew
+ACTIONS NXRefine.RepairUnattached.dll
+
 BUTTON NX_REFINE_REMOVE_MARKINGS
 LABEL Remove Markings
 MESSAGE Select multiple carrier faces and review their connected marking candidates.

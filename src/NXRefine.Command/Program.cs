@@ -31,6 +31,7 @@ namespace NXRefine.Command
                 case "removeblends": return "remove-blends";
                 case "fillholes": return "fill-holes";
                 case "clearcavities": return "clear-cavities";
+                case "repairunattached": return "repair-unattached";
                 case "removemarkings": return "remove-markings";
                 case "repairsheets": return "repair-sheets";
                 case "patchopenings": return "patch-openings";

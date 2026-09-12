@@ -24,6 +24,7 @@ $commands = @(
     "RemoveBlends",
     "FillHoles",
     "ClearCavities",
+    "RepairUnattached",
     "RemoveMarkings",
     "RepairSheets",
     "PatchOpenings",
