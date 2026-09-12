@@ -144,6 +144,10 @@ namespace NXRefine.UI
                 .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
             var selectedTags = new HashSet<Tag>(selected.Select(face => face.Tag));
             if (selectedTags.SetEquals(seeds.Keys)) return;
+            // Remove the previous native collector highlight before replacing
+            // the seed set; otherwise a deselected Boss/Pocket region can stay
+            // visible until the next NX repaint.
+            SetHighlights(seeds.Keys.ToArray(), 0);
             seeds.Clear();
             foreach (Face face in selected) seeds[face.Tag] = face;
             RebuildCandidates();
