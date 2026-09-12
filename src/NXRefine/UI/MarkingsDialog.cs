@@ -15,12 +15,13 @@ namespace NXRefine.UI
     internal sealed class MarkingsDialog : IDisposable
     {
         private readonly NxContext context;
+        private readonly CleanupSettings settings;
         private readonly BlockDialog dialog;
         private readonly System.Windows.Forms.Timer heightTimer;
         private readonly System.Windows.Forms.Timer previewTimer;
         private FaceCollector faceSelect;
         private StringBlock maxHeight;
-        private string heightText = "2";
+        private string heightText;
         private readonly Dictionary<Tag, Face> carriers = new Dictionary<Tag, Face>();
         private readonly List<Face[]> groups = new List<Face[]>();
         private readonly HashSet<Tag> retained = new HashSet<Tag>();
@@ -29,9 +30,10 @@ namespace NXRefine.UI
         private bool updating;
         private bool ready;
 
-        public MarkingsDialog(NxContext context)
+        public MarkingsDialog(NxContext context, CleanupSettings settings)
         {
             this.context = context;
+            this.settings = settings;
             context.RequireWorkPart();
             string path = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "NXRefine.Markings.dlx");
             dialog = context.UI.CreateDialog(path);
@@ -83,9 +85,10 @@ namespace NXRefine.UI
             // StringBlock exposes uncommitted text through an NX-native callback;
             // DoubleBlock only exposes the last committed numeric value.
             maxHeight.RetainValue = false;
-            maxHeight.Value = "2";
+            heightText = settings.RemoveMarkingsMaxHeightMm.ToString("0.########", CultureInfo.InvariantCulture);
+            maxHeight.Value = heightText;
             maxHeight.SetKeystrokeCallback(HeightEdited);
-            activeMaxHeight = 2.0;
+            activeMaxHeight = ReadMaximumHeight();
             ready = true;
         }
 
@@ -162,6 +165,8 @@ namespace NXRefine.UI
             retained.Clear();
             SyncCollector();
             activeMaxHeight = ReadMaximumHeight();
+            settings.RemoveMarkingsMaxHeightMm = ToMillimeters(activeMaxHeight);
+            settings.Save();
             if (carriers.Count == 0) return;
             Scan(activeMaxHeight);
             foreach (Face face in groups.SelectMany(group => group)) retained.Add(face.Tag);

@@ -32,6 +32,8 @@ integration checklist: compilation alone cannot verify native selection repaint.
    NX's red hover preselection from an actual retained highlight.
 9. Confirm that no status or explanatory text is displayed below the Find
    Candidates / Restore All button.
+10. Enter a valid height, complete an Apply or OK pass, reopen Remove Markings,
+    and verify that the entered millimetre value is restored instead of 2 mm.
 
 ## Destructive checks (disposable copy only)
 

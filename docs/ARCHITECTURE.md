@@ -5,7 +5,7 @@ NX Refine deliberately separates geometry inspection from geometry mutation.
 1. `GeometryAnalyzer` combines NX Examine Geometry checks with configurable heuristics for short edges, small faces, blend radii, and cylindrical hole candidates.
 2. `CleanupEngine` groups repair candidates by owning body and executes each operation under one visible NX undo mark.
 3. Ribbon MenuScript files invoke the same managed DLL with a command argument.
-4. User thresholds are stored in `%APPDATA%\NXRefine\settings.ini`.
+4. User thresholds are stored in `%APPDATA%\NXRefine\settings.ini`; Remove Markings' maximum feature height is persisted separately in millimetres.
 
 ## Safety model
 
@@ -22,4 +22,3 @@ NX Refine deliberately separates geometry inspection from geometry mutation.
 - Dumb-solid engraving recognition using shallow concave face regions.
 - JSON/CSV audit reports with before/after validation.
 - Recorded regression parts and automated NX batch tests.
-

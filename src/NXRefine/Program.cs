@@ -34,7 +34,7 @@ namespace NXRefine
                     case "fill-holes": ReportCount(context, "hole faces", engine.FillHoles()); break;
                     case "remove-small": ReportCount(context, "small faces", engine.RemoveSmallFaces()); break;
                     case "repair-sheets": ReportCount(context, "sheet bodies", engine.RepairSheets()); break;
-                    case "remove-markings": using (var form = new MarkingsDialog(context)) form.ShowDialog(); break;
+                    case "remove-markings": using (var form = new MarkingsDialog(context, settings)) form.ShowDialog(); break;
                     case "patch-openings": ShowOpeningGuidance(context, analyzer); break;
                     case "settings": using (var form = new SettingsForm(settings)) form.ShowDialog(); break;
                     case "about": ShowAbout(); break;

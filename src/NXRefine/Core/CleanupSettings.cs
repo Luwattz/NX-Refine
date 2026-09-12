@@ -14,6 +14,7 @@ namespace NXRefine.Core
             MaxHoleDiameter = 8.0;
             SewTolerance = 0.01;
             SharpAngle = 10.0;
+            RemoveMarkingsMaxHeightMm = 2.0;
             ConfirmBeforeRepair = true;
         }
 
@@ -23,6 +24,7 @@ namespace NXRefine.Core
         public double MaxHoleDiameter { get; set; }
         public double SewTolerance { get; set; }
         public double SharpAngle { get; set; }
+        public double RemoveMarkingsMaxHeightMm { get; set; }
         public bool ConfirmBeforeRepair { get; set; }
 
         public static string SettingsPath
@@ -54,6 +56,10 @@ namespace NXRefine.Core
                     case "MaxHoleDiameter": if (TryNumber(parts[1], out number)) settings.MaxHoleDiameter = number; break;
                     case "SewTolerance": if (TryNumber(parts[1], out number)) settings.SewTolerance = number; break;
                     case "SharpAngle": if (TryNumber(parts[1], out number)) settings.SharpAngle = number; break;
+                    case "RemoveMarkingsMaxHeightMm":
+                        if (TryNumber(parts[1], out number) && number > 0.0 && number <= 100000.0)
+                            settings.RemoveMarkingsMaxHeightMm = number;
+                        break;
                     case "ConfirmBeforeRepair": if (bool.TryParse(parts[1], out flag)) settings.ConfirmBeforeRepair = flag; break;
                 }
             }
@@ -66,13 +72,14 @@ namespace NXRefine.Core
             Directory.CreateDirectory(directory);
             File.WriteAllLines(SettingsPath, new[]
             {
-                "# NX Refine settings. Lengths use the current part unit.",
+                "# NX Refine settings. Geometric thresholds use the current part unit; RemoveMarkingsMaxHeightMm is always millimetres.",
                 "SmallFaceArea=" + Format(SmallFaceArea),
                 "ShortEdgeLength=" + Format(ShortEdgeLength),
                 "MaxBlendRadius=" + Format(MaxBlendRadius),
                 "MaxHoleDiameter=" + Format(MaxHoleDiameter),
                 "SewTolerance=" + Format(SewTolerance),
                 "SharpAngle=" + Format(SharpAngle),
+                "RemoveMarkingsMaxHeightMm=" + Format(RemoveMarkingsMaxHeightMm),
                 "ConfirmBeforeRepair=" + ConfirmBeforeRepair
             });
         }
