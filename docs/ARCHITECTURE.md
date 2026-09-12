@@ -7,7 +7,7 @@ NX Refine deliberately separates geometry inspection from geometry mutation.
 3. Ribbon MenuScript files invoke the same managed DLL with a command argument.
 4. User thresholds are stored in `%APPDATA%\NXRefine\settings.ini`; Remove Markings' maximum feature height is persisted separately in millimetres, and Fill Holes' maximum radius is persisted in current part units.
 5. Clear Cavities classifies NX exterior faces with UFUN ray analysis, groups the remaining faces by edge connectivity, and heals only user-retained closed internal shells through a native Delete Face builder.
-6. Repair Unattached Faces uses bounding-box broad-phase filtering plus UFUN minimum-distance measurements, groups non-adjacent near-face pairs, and dispatches separate-body pairs to native Sew or same-body pairs to native Delete Face/Heal.
+6. Repair Unattached Faces uses bounding-box broad-phase filtering, positive UFUN minimum distances, opposing local normals, non-collinear patch samples, and empty-space containment checks. Only smaller problem-side faces participate in preview grouping; a shared carrier does not join independent gaps. Retained pairs dispatch to native Sew (separate bodies) or Delete Face/Heal (same body). Sampling is conservative, not exhaustive, and intentional clearances still require user review.
 
 ## Safety model
 

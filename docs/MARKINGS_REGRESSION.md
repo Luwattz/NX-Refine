@@ -34,6 +34,9 @@ integration checklist: compilation alone cannot verify native selection repaint.
    Candidates / Restore All button.
 10. Enter a valid height, complete an Apply or OK pass, reopen Remove Markings,
     and verify that the entered millimetre value is restored instead of 2 mm.
+11. Select the height text, type `0.2` one character at a time, and verify that
+    typing the first `0` does not scan, freeze NX, or start a preview. Press
+    Enter or leave the field and verify that one scan starts with `0.2`.
 
 ## Destructive checks (disposable copy only)
 

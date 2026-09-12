@@ -23,3 +23,6 @@ not results inferred from a successful build.
 7. Reopen after Apply/OK: the last radius must be restored.
 8. If native expansion fails, verify the NX system log identifies the seed;
    no whole-body adjacency expansion may replace the failed rule.
+9. Select the radius text, type `0.2` one character at a time, and verify that
+   typing the first `0` does not scan or freeze NX. Press Enter or leave the
+   field and verify that candidates rebuild once using `0.2`.

@@ -9,6 +9,7 @@ using NXOpen.BlockStyler;
 using NXOpen.Features;
 using NXOpen.UF;
 using NXRefine.Core;
+using NXRefine.Analysis;
 using SelectObject = NXOpen.BlockStyler.SelectObject;
 
 namespace NXRefine.UI
@@ -31,11 +32,13 @@ namespace NXRefine.UI
         private FaceCollector faceSelect;
         private string gapText;
         private double activeGap;
+        private double gapResolution;
         private readonly Dictionary<Tag, Body> bodies = new Dictionary<Tag, Body>();
         private readonly Dictionary<Tag, FaceInfo> faces = new Dictionary<Tag, FaceInfo>();
         private readonly List<GapGroup> groups = new List<GapGroup>();
         private readonly HashSet<Tag> retained = new HashSet<Tag>();
         private bool previewValid;
+        private bool gapEditPending;
         private bool updating;
         private bool ready;
 
@@ -97,6 +100,7 @@ namespace NXRefine.UI
             faceSelect.PopupMenuEnabled = true;
 
             activeGap = ReadMaximumGap();
+            gapEditPending = false;
             ready = true;
         }
 
@@ -107,11 +111,21 @@ namespace NXRefine.UI
             {
                 updating = true;
                 string blockName = block == null ? string.Empty : block.Name;
-                if (blockName == "maxGap" && previewValid && !gapTimer.Enabled && ReadMaximumGap() == activeGap)
-                    return 0;
-                if (blockName == "maxGap") RebuildCandidates();
-                else if (blockName == "bodies") UpdateBodies();
-                else if (blockName == "faces") UpdateFaceSelection();
+                // StringBlock can raise Update for every keystroke. Keep the
+                // text provisional until focus loss, Enter, or an explicit
+                // command commits it; never scan an incomplete value.
+                if (blockName == "maxGap")
+                {
+                    if (gapEditPending) return 0;
+                    if (previewValid && ReadMaximumGap() == activeGap) return 0;
+                    RebuildCandidates();
+                }
+                else
+                {
+                    if (gapEditPending && !CommitGapInput()) return 0;
+                    if (blockName == "bodies") UpdateBodies();
+                    else if (blockName == "faces") UpdateFaceSelection();
+                }
                 Preview();
                 QueuePreviewRefresh();
                 return 0;
@@ -158,6 +172,8 @@ namespace NXRefine.UI
             if (faceSelect != null) faceSelect.SetSelectedObjects(new TaggedObject[0]);
             activeGap = ReadMaximumGap();
 
+            // Numerical zero in part units, independent of the user's search limit.
+            gapResolution = context.WorkPart.PartUnits == BasePart.Units.Inches ? 1e-6 / 25.4 : 1e-6;
             foreach (Body body in bodies.Values) AddBodyFaces(body);
             BuildTopologicalAdjacency();
             groups.AddRange(FindGapGroups());
@@ -179,8 +195,17 @@ namespace NXRefine.UI
 
         private int GapEdited(StringBlock block, string uncommittedValue)
         {
-            if (!ready || updating || gapText == uncommittedValue) return 0;
+            if (!ready || updating) return 0;
+            // Enter is reported without changing the text. Treat that
+            // unchanged callback as an explicit commit request and defer one
+            // UI tick so the native edit can settle.
+            if (gapText == uncommittedValue)
+            {
+                if (gapEditPending) ScheduleGapCommit();
+                return 0;
+            }
             gapText = uncommittedValue;
+            gapEditPending = true;
             gapTimer.Stop();
             previewTimer.Stop();
             previewValid = false;
@@ -192,7 +217,6 @@ namespace NXRefine.UI
                 groups.Clear();
                 retained.Clear();
                 if (faceSelect != null) faceSelect.SetSelectedObjects(new TaggedObject[0]);
-                gapTimer.Start();
             }
             catch (Exception ex) { Error(ex); }
             finally { updating = false; }
@@ -205,9 +229,9 @@ namespace NXRefine.UI
             if (!ready || updating) return;
             try
             {
-                if (Update(maxGap) == 0 && previewValid)
+                if (CommitGapInput())
                 {
-                    faceSelect.Focus();
+                    RebuildCandidates();
                     Preview();
                     QueuePreviewRefresh();
                 }
@@ -287,7 +311,6 @@ namespace NXRefine.UI
                     }
                     if (first.Body.Tag == second.Body.Tag && first.Adjacent.Contains(second.Face.Tag)) continue;
                     if (!BoxesWithin(first.Box, second.Box, searchTolerance)) continue;
-                    if (!NormalsCompatible(first.Normal, second.Normal)) continue;
 
                     GapPair pair;
                     if (TryMeasureGap(first, second, out pair)) pairs.Add(pair);
@@ -298,16 +321,18 @@ namespace NXRefine.UI
             var index = new Dictionary<Tag, int>();
             foreach (GapPair pair in pairs)
             {
-                if (!index.ContainsKey(pair.First.Face.Tag)) index[pair.First.Face.Tag] = index.Count;
-                if (!index.ContainsKey(pair.Second.Face.Tag)) index[pair.Second.Face.Tag] = index.Count;
+                Tag source = SmallerFace(pair.First, pair.Second).Tag;
+                if (!index.ContainsKey(source)) index[source] = index.Count;
             }
             var union = new UnionFind(index.Count);
-            foreach (GapPair pair in pairs) union.Join(index[pair.First.Face.Tag], index[pair.Second.Face.Tag]);
+            foreach (Tag source in index.Keys)
+                foreach (Tag adjacent in faces[source].Adjacent)
+                    if (index.ContainsKey(adjacent)) union.Join(index[source], index[adjacent]);
 
             var byRoot = new Dictionary<int, List<GapPair>>();
             foreach (GapPair pair in pairs)
             {
-                int root = union.Find(index[pair.First.Face.Tag]);
+                int root = union.Find(index[SmallerFace(pair.First, pair.Second).Tag]);
                 List<GapPair> list;
                 if (!byRoot.TryGetValue(root, out list))
                 {
@@ -320,7 +345,9 @@ namespace NXRefine.UI
             var result = new List<GapGroup>();
             foreach (List<GapPair> pairList in byRoot.Values)
             {
-                Face[] groupFaces = pairList.SelectMany(pair => new[] { pair.First.Face, pair.Second.Face })
+                // Carrier faces are references, not selection bridges between
+                // unrelated ribs. Highlight only the small problem-side faces.
+                Face[] groupFaces = pairList.Select(pair => SmallerFace(pair.First, pair.Second))
                     .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
                 result.Add(new GapGroup(groupFaces, pairList.ToArray()));
             }
@@ -354,8 +381,12 @@ namespace NXRefine.UI
                 catch (NXException) { return false; }
             }
             if (double.IsNaN(distance) || double.IsInfinity(distance) || distance < 0.0) return false;
-            if (double.IsNaN(accuracy) || double.IsInfinity(accuracy) || accuracy < 0.0) accuracy = 0.0;
-            if (distance > activeGap + accuracy) return false;
+            if (double.IsNaN(accuracy) || double.IsInfinity(accuracy) || accuracy < 0.0) return false;
+            if (!GapCriteria.PositiveGap(distance, activeGap, gapResolution, accuracy)) return false;
+            // A minimum distance alone also accepts shared vertices, edge-only
+            // proximity, thin material and intentional nearby details. Require
+            // a two-dimensional patch of opposing faces across empty space.
+            if (!HasGapPatch(first, second, pointFirst, pointSecond, distance)) return false;
 
             // For separate bodies, normalize target/tool orientation so a
             // connected candidate is repaired in one deterministic sew.
@@ -388,17 +419,103 @@ namespace NXRefine.UI
             return 0.0;
         }
 
-        private static bool NormalsCompatible(double[] first, double[] second)
+        private bool HasGapPatch(FaceInfo first, FaceInfo second, double[] closestFirst,
+            double[] closestSecond, double distance)
         {
-            if (first == null || second == null) return true;
-            double lengthFirst = Length(first);
-            double lengthSecond = Length(second);
-            if (lengthFirst < 1e-9 || lengthSecond < 1e-9) return true;
-            double dot = Math.Abs((first[0] * second[0] + first[1] * second[1] + first[2] * second[2]) /
-                (lengthFirst * lengthSecond));
-            // Near-contact surfaces are normally parallel or gently angled.
-            // Keep a low threshold so sloped rib/base contacts are retained.
-            return dot >= 0.2;
+            // Sample the smaller contact face, never the whole carrier's box.
+            if (SmallerFace(first, second).Tag != first.Face.Tag)
+            {
+                FaceInfo swap = first; first = second; second = swap;
+                double[] swapPoint = closestFirst; closestFirst = closestSecond; closestSecond = swapPoint;
+            }
+            try
+            {
+                double[] normal = NormalAt(first.Face, closestFirst);
+                double length = Length(normal);
+                if (length < 1e-12) return false;
+                normal = normal.Select(value => value / length).ToArray();
+                double[] axis = Math.Abs(normal[0]) < 0.8 ? new[] { 1.0, 0.0, 0.0 } : new[] { 0.0, 1.0, 0.0 };
+                double[] u = Cross(normal, axis);
+                double uLength = Length(u);
+                u = u.Select(value => value / uLength).ToArray();
+                double[] v = Cross(normal, u);
+                double step = Math.Max(gapResolution * 20,
+                    Math.Min(Math.Sqrt(ApproximateFaceSize(first.Box)) * 0.02, distance * 2));
+                var samples = new List<double[]>();
+                foreach (double[] anchor in new[] { closestFirst, first.Point ?? closestFirst })
+                {
+                    for (int i = -1; i <= 1; i++)
+                        for (int j = -1; j <= 1; j++)
+                        {
+                            double[] guess = Enumerable.Range(0, 3)
+                                .Select(k => anchor[k] + step * (i * u[k] + j * v[k])).ToArray();
+                            double[] p, q;
+                            double projectionError, measured;
+                            if (!ClosestPoint(first.Face, guess, out p, out projectionError) || projectionError > step * 0.25) continue;
+                            if (!ClosestPoint(second.Face, p, out q, out measured)) continue;
+                            if (!GapCriteria.PositiveGap(measured, activeGap, gapResolution, gapResolution * 0.1)) continue;
+                            double[] displacement = Enumerable.Range(0, 3).Select(k => q[k] - p[k]).ToArray();
+                            if (!GapCriteria.Facing(NormalAt(first.Face, p), NormalAt(second.Face, q), displacement)) continue;
+                            if (!EmptyGap(p, q)) continue;
+                            samples.Add(p);
+                        }
+                }
+                // Non-collinear samples provide evidence of area overlap instead of one
+                // close vertex or a narrow boundary edge.
+                for (int i = 0; i < samples.Count; i++)
+                    for (int j = i + 1; j < samples.Count; j++)
+                        for (int k = j + 1; k < samples.Count; k++)
+                        {
+                            double[] a = Enumerable.Range(0, 3).Select(n => samples[j][n] - samples[i][n]).ToArray();
+                            double[] b = Enumerable.Range(0, 3).Select(n => samples[k][n] - samples[i][n]).ToArray();
+                            if (Length(Cross(a, b)) > step * step * 0.25) return true;
+                        }
+                return false;
+            }
+            catch (NXException ex)
+            {
+                context.Log("Gap verification skipped uncertain pair: " + ex.Message);
+                return false;
+            }
+        }
+
+        private bool ClosestPoint(Face face, double[] reference, out double[] point, out double distance)
+        {
+            point = new double[3];
+            double accuracy;
+            context.UF.Modl.AskMinimumDist3(2, Tag.Null, face.Tag, 1, reference, 0, new double[3],
+                out distance, new double[3], point, out accuracy);
+            return !double.IsNaN(distance) && !double.IsInfinity(distance) &&
+                !double.IsNaN(accuracy) && accuracy >= 0 && accuracy <= gapResolution * 0.1;
+        }
+
+        private double[] NormalAt(Face face, double[] reference)
+        {
+            double[] uv = new double[2], point = new double[3], normal = new double[3];
+            context.UF.Modl.AskFaceParm(face.Tag, reference, uv, point);
+            context.UF.Modl.AskFaceProps(face.Tag, uv, point, new double[3], new double[3],
+                new double[3], new double[3], normal, new double[2]);
+            return normal;
+        }
+
+        private bool EmptyGap(double[] first, double[] second)
+        {
+            foreach (double fraction in new[] { 0.25, 0.5, 0.75 })
+            {
+                double[] point = Enumerable.Range(0, 3).Select(k => first[k] + fraction * (second[k] - first[k])).ToArray();
+                foreach (Body body in bodies.Values)
+                {
+                    int status;
+                    context.UF.Modl.AskPointContainment(point, body.Tag, out status);
+                    if (status != 2) return false; // Inside or on material is not an open gap.
+                }
+            }
+            return true;
+        }
+
+        private static double[] Cross(double[] a, double[] b)
+        {
+            return new[] { a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0] };
         }
 
         private static double Length(double[] vector)
@@ -457,9 +574,25 @@ namespace NXRefine.UI
 
         private bool CanApply()
         {
-            if (!ready || updating || !previewValid || gapTimer.Enabled || retained.Count == 0) return false;
+            if (!ready || updating || gapEditPending || !previewValid || gapTimer.Enabled || retained.Count == 0) return false;
             try { return ReadMaximumGap() == activeGap; }
             catch (InvalidOperationException) { return false; }
+        }
+
+        private bool CommitGapInput()
+        {
+            if (!gapEditPending) return true;
+            try { ReadMaximumGap(); }
+            catch (InvalidOperationException) { return false; }
+            gapEditPending = false;
+            gapTimer.Stop();
+            return true;
+        }
+
+        private void ScheduleGapCommit()
+        {
+            gapTimer.Stop();
+            gapTimer.Start();
         }
 
         private void FocusChanged(UIBlock block, bool isFocus)
@@ -473,6 +606,11 @@ namespace NXRefine.UI
 
         private void KeyboardFocusChanged(UIBlock block, bool isFocus)
         {
+            if (!isFocus && block != null && block.Name == "maxGap" && gapEditPending)
+            {
+                ScheduleGapCommit();
+                return;
+            }
             if (isFocus && ready && !updating && previewValid)
             {
                 Preview();
@@ -551,7 +689,22 @@ namespace NXRefine.UI
 
         private int Apply()
         {
-            if (!ready || !previewValid || gapTimer.Enabled || retained.Count == 0) return 1;
+            if (!ready) return 1;
+            if (gapEditPending)
+            {
+                if (!CommitGapInput()) return 1;
+                // Rebuild now, then require a second click so the user can
+                // review the new gap candidates before repairing them.
+                try
+                {
+                    RebuildCandidates();
+                    Preview();
+                    QueuePreviewRefresh();
+                }
+                catch (Exception ex) { return Error(ex); }
+                return 1;
+            }
+            if (!previewValid || gapTimer.Enabled || retained.Count == 0) return 1;
             try
             {
                 if (ReadMaximumGap() != activeGap) return 1;
@@ -564,8 +717,8 @@ namespace NXRefine.UI
                 "NX Refine - Repair Unattached Faces");
             try
             {
+                Reset(); // Clear highlights while face tags are still valid.
                 RepairSelectedGroups(selected);
-                Reset();
                 context.Log("Repaired " + selected.Length + " unattached face groups.");
                 return 0;
             }

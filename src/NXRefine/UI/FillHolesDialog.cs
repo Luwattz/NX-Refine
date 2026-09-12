@@ -32,6 +32,7 @@ namespace NXRefine.UI
         private readonly HashSet<Tag> retained = new HashSet<Tag>();
         private double activeMaxRadius;
         private bool previewValid;
+        private bool radiusEditPending;
         private bool updating;
         private bool ready;
 
@@ -90,6 +91,7 @@ namespace NXRefine.UI
             faceSelect.PopupMenuEnabled = true;
 
             activeMaxRadius = ReadMaximumRadius();
+            radiusEditPending = false;
             ready = true;
         }
 
@@ -100,11 +102,21 @@ namespace NXRefine.UI
             {
                 updating = true;
                 string blockName = block == null ? string.Empty : block.Name;
-                if (blockName == "radiusInput" && previewValid &&
-                    !radiusTimer.Enabled && ReadMaximumRadius() == activeMaxRadius) return 0;
-                if (blockName == "radiusInput") RebuildCandidates();
-                else if (blockName == "bodies") UpdateBodies();
-                else if (blockName == "faces") UpdateFaceSelection();
+                // StringBlock can raise Update for every keystroke. Keep the
+                // text provisional until focus loss, Enter, or an explicit
+                // command commits it; never scan an incomplete value.
+                if (blockName == "radiusInput")
+                {
+                    if (radiusEditPending) return 0;
+                    if (previewValid && ReadMaximumRadius() == activeMaxRadius) return 0;
+                    RebuildCandidates();
+                }
+                else
+                {
+                    if (radiusEditPending && !CommitRadiusInput()) return 0;
+                    if (blockName == "bodies") UpdateBodies();
+                    else if (blockName == "faces") UpdateFaceSelection();
+                }
                 Preview();
                 QueuePreviewRefresh();
                 return 0;
@@ -168,8 +180,17 @@ namespace NXRefine.UI
 
         private int RadiusEdited(StringBlock block, string uncommittedValue)
         {
-            if (!ready || updating || radiusText == uncommittedValue) return 0;
+            if (!ready || updating) return 0;
+            // Enter is reported without changing the text. Treat that
+            // unchanged callback as an explicit commit request and defer one
+            // UI tick so the native edit can settle.
+            if (radiusText == uncommittedValue)
+            {
+                if (radiusEditPending) ScheduleRadiusCommit();
+                return 0;
+            }
             radiusText = uncommittedValue;
+            radiusEditPending = true;
             radiusTimer.Stop();
             previewTimer.Stop();
             previewValid = false;
@@ -180,7 +201,6 @@ namespace NXRefine.UI
                 groups.Clear();
                 retained.Clear();
                 if (faceSelect != null) faceSelect.SetSelectedObjects(new TaggedObject[0]);
-                radiusTimer.Start();
             }
             catch (Exception ex) { Error(ex); }
             finally { updating = false; }
@@ -193,9 +213,9 @@ namespace NXRefine.UI
             if (!ready || updating) return;
             try
             {
-                if (Update(maxRadius) == 0 && previewValid)
+                if (CommitRadiusInput())
                 {
-                    faceSelect.Focus();
+                    RebuildCandidates();
                     Preview();
                     QueuePreviewRefresh();
                 }
@@ -205,9 +225,25 @@ namespace NXRefine.UI
 
         private bool CanApply()
         {
-            if (!ready || updating || !previewValid || radiusTimer.Enabled || retained.Count == 0) return false;
+            if (!ready || updating || radiusEditPending || !previewValid || radiusTimer.Enabled || retained.Count == 0) return false;
             try { return ReadMaximumRadius() == activeMaxRadius; }
             catch (InvalidOperationException) { return false; }
+        }
+
+        private bool CommitRadiusInput()
+        {
+            if (!radiusEditPending) return true;
+            try { ReadMaximumRadius(); }
+            catch (InvalidOperationException) { return false; }
+            radiusEditPending = false;
+            radiusTimer.Stop();
+            return true;
+        }
+
+        private void ScheduleRadiusCommit()
+        {
+            radiusTimer.Stop();
+            radiusTimer.Start();
         }
 
         private Face[][] FindGroups(Body body, double maximumRadius)
@@ -412,6 +448,12 @@ namespace NXRefine.UI
 
         private void KeyboardFocusChanged(UIBlock block, bool isFocus)
         {
+            if (!ready || updating) return;
+            if (!isFocus && block != null && block.Name == "radiusInput" && radiusEditPending)
+            {
+                ScheduleRadiusCommit();
+                return;
+            }
             if (isFocus && ready && !updating && previewValid)
             {
                 Preview();
@@ -491,6 +533,20 @@ namespace NXRefine.UI
         private int Apply()
         {
             if (!ready) return 1;
+            if (radiusEditPending)
+            {
+                if (!CommitRadiusInput()) return 1;
+                // Rebuild now, then require a second click so the user can
+                // review the new hole candidates before deletion.
+                try
+                {
+                    RebuildCandidates();
+                    Preview();
+                    QueuePreviewRefresh();
+                }
+                catch (Exception ex) { return Error(ex); }
+                return 1;
+            }
             try
             {
                 if (!previewValid || radiusTimer.Enabled || ReadMaximumRadius() != activeMaxRadius)

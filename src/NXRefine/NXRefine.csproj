@@ -57,6 +57,7 @@
     <Compile Include="Core\Issue.cs" />
     <Compile Include="Core\NxContext.cs" />
     <Compile Include="Analysis\GeometryAnalyzer.cs" />
+    <Compile Include="Analysis\GapCriteria.cs" />
     <Compile Include="Repair\CleanupEngine.cs" />
     <Compile Include="UI\SettingsForm.cs" />
     <Compile Include="UI\FillHolesDialog.cs" />

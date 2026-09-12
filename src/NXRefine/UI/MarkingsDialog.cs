@@ -27,6 +27,7 @@ namespace NXRefine.UI
         private readonly HashSet<Tag> retained = new HashSet<Tag>();
         private double activeMaxHeight = 2.0;
         private bool previewValid;
+        private bool heightEditPending;
         private bool updating;
         private bool ready;
 
@@ -89,6 +90,7 @@ namespace NXRefine.UI
             maxHeight.Value = heightText;
             maxHeight.SetKeystrokeCallback(HeightEdited);
             activeMaxHeight = ReadMaximumHeight();
+            heightEditPending = false;
             ready = true;
         }
 
@@ -99,13 +101,25 @@ namespace NXRefine.UI
             {
                 updating = true;
                 string blockName = block == null ? string.Empty : block.Name;
-                // A delayed native commit of text already scanned must not
-                // restore groups that the user has since excluded.
-                if (blockName == "heightInput" && previewValid &&
-                    !heightTimer.Enabled && ReadMaximumHeight() == activeMaxHeight)
-                    return 0;
-                if (blockName == "heightInput" || blockName == "find") RebuildCandidates();
-                else if (blockName == "selection") UpdateMergedSelection();
+                // StringBlock can raise Update for every keystroke.  Keep the
+                // text provisional until the field is committed by focus loss,
+                // Enter, Find, Apply, or OK; never scan the first "0" in "0.2".
+                if (blockName == "heightInput")
+                {
+                    if (heightEditPending) return 0;
+                    if (previewValid && ReadMaximumHeight() == activeMaxHeight) return 0;
+                    RebuildCandidates();
+                }
+                else if (blockName == "find")
+                {
+                    if (!CommitHeightInput()) return 0;
+                    RebuildCandidates();
+                }
+                else
+                {
+                    if (heightEditPending && !CommitHeightInput()) return 0;
+                    if (blockName == "selection") UpdateMergedSelection();
+                }
                 Preview();
                 QueuePreviewRefresh();
                 return 0;
@@ -238,8 +252,17 @@ namespace NXRefine.UI
 
         private int HeightEdited(StringBlock block, string uncommittedValue)
         {
-            if (!ready || updating || heightText == uncommittedValue) return 0;
+            if (!ready || updating) return 0;
+            // NX notifies the keystroke observer for Enter without changing
+            // the text. Treat that unchanged callback as an explicit commit
+            // request and defer one UI tick so the native edit can settle.
+            if (heightText == uncommittedValue)
+            {
+                if (heightEditPending) ScheduleHeightCommit();
+                return 0;
+            }
             heightText = uncommittedValue;
+            heightEditPending = true;
             heightTimer.Stop();
             previewTimer.Stop();
             previewValid = false;
@@ -251,7 +274,6 @@ namespace NXRefine.UI
                 groups.Clear();
                 retained.Clear();
                 SyncCollector();
-                heightTimer.Start();
             }
             catch (Exception ex) { Error(ex); }
             finally { updating = false; }
@@ -260,17 +282,15 @@ namespace NXRefine.UI
 
         private void RefreshHeight(object sender, EventArgs args)
         {
-            // WinForms Timer runs on the NX UI thread, after the keystroke callback.
+            // This timer is started only by focus loss or an Enter commit, not
+            // after ordinary keystrokes.
             heightTimer.Stop();
             if (!ready || updating) return;
             try
             {
-                if (Update(maxHeight) == 0 && previewValid)
+                if (CommitHeightInput())
                 {
-                    // Native selection focus is independent of the text caret.
-                    // Finish the native collector repaint and button validation
-                    // after Update has left its reentrancy guard.
-                    faceSelect.Focus();
+                    RebuildCandidates();
                     Preview();
                     QueuePreviewRefresh();
                 }
@@ -280,9 +300,25 @@ namespace NXRefine.UI
 
         private bool CanApply()
         {
-            if (!ready || updating || !previewValid || heightTimer.Enabled || retained.Count == 0) return false;
+            if (!ready || updating || heightEditPending || !previewValid || heightTimer.Enabled || retained.Count == 0) return false;
             try { return ReadMaximumHeight() == activeMaxHeight; }
             catch (InvalidOperationException) { return false; }
+        }
+
+        private bool CommitHeightInput()
+        {
+            if (!heightEditPending) return true;
+            try { ReadMaximumHeight(); }
+            catch (InvalidOperationException) { return false; }
+            heightEditPending = false;
+            heightTimer.Stop();
+            return true;
+        }
+
+        private void ScheduleHeightCommit()
+        {
+            heightTimer.Stop();
+            heightTimer.Start();
         }
 
         private void Scan(double maximumHeight)
@@ -486,6 +522,11 @@ namespace NXRefine.UI
         private void KeyboardFocusChanged(UIBlock block, bool isFocus)
         {
             if (!ready || updating) return;
+            if (!isFocus && block != null && block.Name == "heightInput" && heightEditPending)
+            {
+                ScheduleHeightCommit();
+                return;
+            }
             // Do not restore excluded groups merely because focus changed.
             if (isFocus && previewValid)
             {
@@ -576,6 +617,20 @@ namespace NXRefine.UI
         private int Apply()
         {
             if (!ready) return 1;
+            if (heightEditPending)
+            {
+                if (!CommitHeightInput()) return 1;
+                // Rebuild now, then require a second click so the user can
+                // review the newly calculated candidates before deletion.
+                try
+                {
+                    RebuildCandidates();
+                    Preview();
+                    QueuePreviewRefresh();
+                }
+                catch (Exception ex) { return Error(ex); }
+                return 1;
+            }
             try
             {
                 if (!previewValid || heightTimer.Enabled || ReadMaximumHeight() != activeMaxHeight)
