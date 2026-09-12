@@ -16,8 +16,8 @@ integration checklist: compilation alone cannot verify native selection repaint.
    both must become available without an extra click on the face collector.
 4. Verify that lowering the threshold removes tall-boss highlights and that
    increasing it includes qualifying connected characters. The carrier and
-   candidates must appear in the same collector, while the status reports their
-   counts separately.
+   candidates must remain in the same collector. Only candidates may be highlighted;
+   carrier faces must return to their normal display state after selection.
 5. Enter invalid text, zero, a negative value, and an empty string. No previous
    candidates may remain actionable. Restore a valid positive value and verify
    that candidates and button availability recover.
@@ -30,6 +30,8 @@ integration checklist: compilation alone cannot verify native selection repaint.
 8. Cancel and reopen. The old preview must clear and the new dialog must start
    with no carrier or candidates. Move the pointer off the model to distinguish
    NX's red hover preselection from an actual retained highlight.
+9. Confirm that no status or explanatory text is displayed below the Find
+   Candidates / Restore All button.
 
 ## Destructive checks (disposable copy only)
 

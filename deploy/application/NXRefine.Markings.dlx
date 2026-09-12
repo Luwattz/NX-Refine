@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Dialog id="Dialog" name="Dialog" type="uicomp" class="" version="1.0.0" NX="2312" Expanded="1" ContainerItems="4">
+<Dialog id="Dialog" name="Dialog" type="uicomp" class="" version="1.0.0" NX="2312" Expanded="1" ContainerItems="3">
 <item id="selection" name="selection" type="uicomp" class="UICOMP_face_select" Expanded="1" hierarchy="UGS::UI::Comp::Container"><PropertyList id="id" mode="0">
 <Property id="API Name" name="API Name" sname="BlockID" type="string" value="selection" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
 <Property id="Visibility" name="Visibility" sname="Show" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
@@ -25,14 +25,6 @@
 <Property id="Visibility" name="Visibility" sname="Show" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
 <Property id="Sensitivity" name="Sensitivity" sname="Enable" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
 <Property id="Title" name="Title" sname="Label" type="utfstring" value="Find Candidates / Restore All" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_button" group="General::" />
-
-</PropertyList></item>
-<item id="status" name="status" type="uicomp" class="UICOMP_label" Expanded="1" hierarchy="UGS::UI::Comp::Container"><PropertyList id="id" mode="0">
-<Property id="API Name" name="API Name" sname="BlockID" type="string" value="status" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
-<Property id="Visibility" name="Visibility" sname="Show" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
-<Property id="Sensitivity" name="Sensitivity" sname="Enable" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP" group="General::" />
-<Property id="Title" name="Title" sname="Label" type="utfstring" value="Select one or more carrier faces." mask="0" source="1" ClassID="UGS::UICOMP" hierarchy="UGS::UICOMP_label" group="General::" />
-<Property id="WordWrap" name="WordWrap" sname="WordWrap" type="logical" value="True" mask="0" source="1" ClassID="UGS::UICOMP_label" hierarchy="UGS::UICOMP_label" group="General::" />
 
 </PropertyList></item>
 <PropertyList id="id" mode="0">

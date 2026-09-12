@@ -17,10 +17,10 @@ namespace NXRefine.UI
         private readonly NxContext context;
         private readonly BlockDialog dialog;
         private readonly System.Windows.Forms.Timer heightTimer;
+        private readonly System.Windows.Forms.Timer previewTimer;
         private FaceCollector faceSelect;
         private StringBlock maxHeight;
         private string heightText = "2";
-        private NXOpen.BlockStyler.Label status;
         private readonly Dictionary<Tag, Face> carriers = new Dictionary<Tag, Face>();
         private readonly List<Face[]> groups = new List<Face[]>();
         private readonly HashSet<Tag> retained = new HashSet<Tag>();
@@ -45,6 +45,11 @@ namespace NXRefine.UI
             dialog.AddEnableOKButtonHandler(CanApply);
             heightTimer = new System.Windows.Forms.Timer { Interval = 200 };
             heightTimer.Tick += RefreshHeight;
+            // Native collectors repaint their own selected-object highlight
+            // after Update returns. This one-shot repaint correction keeps
+            // protected carriers visually neutral while candidates stay lit.
+            previewTimer = new System.Windows.Forms.Timer { Interval = 50 };
+            previewTimer.Tick += RefreshPreview;
         }
 
         public void ShowDialog()
@@ -53,6 +58,7 @@ namespace NXRefine.UI
             finally
             {
                 heightTimer.Stop();
+                previewTimer.Stop();
                 // A native Block Styler dialog can be closed from its title-bar
                 // close button without entering the OK/Apply callbacks.  Clear
                 // NX's global selection list here as a final safety net.  Do not
@@ -67,7 +73,6 @@ namespace NXRefine.UI
         {
             faceSelect = (FaceCollector)dialog.TopBlock.FindBlock("selection");
             maxHeight = (StringBlock)dialog.TopBlock.FindBlock("heightInput");
-            status = (NXOpen.BlockStyler.Label)dialog.TopBlock.FindBlock("status");
             faceSelect.EntityType = 16; // Faces
             faceSelect.MaximumScopeAsString = "Within Work Part Only";
             // The merged collector must accept one carrier face at a time, but
@@ -82,7 +87,6 @@ namespace NXRefine.UI
             maxHeight.SetKeystrokeCallback(HeightEdited);
             activeMaxHeight = 2.0;
             ready = true;
-            status.Label = "Select one or more carrier faces. Candidates for every carrier are added to this same selection collector and highlighted.";
         }
 
         private int Update(UIBlock block)
@@ -100,7 +104,7 @@ namespace NXRefine.UI
                 if (blockName == "heightInput" || blockName == "find") RebuildCandidates();
                 else if (blockName == "selection") UpdateMergedSelection();
                 Preview();
-                UpdateStatus();
+                QueuePreviewRefresh();
                 return 0;
             }
             catch (Exception ex) { return Error(ex); }
@@ -151,6 +155,7 @@ namespace NXRefine.UI
         private void RebuildCandidates()
         {
             heightTimer.Stop();
+            previewTimer.Stop();
             previewValid = false;
             ClearPreview();
             groups.Clear();
@@ -164,23 +169,10 @@ namespace NXRefine.UI
             previewValid = true;
         }
 
-        private void UpdateStatus()
-        {
-            if (carriers.Count == 0)
-            {
-                status.Label = "Select one or more carrier faces. Candidates will be added to this same selection collector.";
-                return;
-            }
-            status.Label = carriers.Count + " carrier faces; " + RetainedGroupCount() +
-                " connected candidate groups; " + retained.Count +
-                " candidate faces retained. Maximum height " +
-                ToMillimeters(activeMaxHeight).ToString("0.###") +
-                " mm. Carrier faces are protected from deletion.";
-        }
-
         private int Cancel()
         {
             heightTimer.Stop();
+            previewTimer.Stop();
             previewValid = false;
             // Native selection collectors must be emptied while the Block Styler
             // dialog is still active. Doing this after Launch returns makes NX
@@ -244,6 +236,7 @@ namespace NXRefine.UI
             if (!ready || updating || heightText == uncommittedValue) return 0;
             heightText = uncommittedValue;
             heightTimer.Stop();
+            previewTimer.Stop();
             previewValid = false;
             updating = true;
             try
@@ -253,7 +246,6 @@ namespace NXRefine.UI
                 groups.Clear();
                 retained.Clear();
                 SyncCollector();
-                status.Label = "Updating candidates for maximum height " + heightText + " mm...";
                 heightTimer.Start();
             }
             catch (Exception ex) { Error(ex); }
@@ -275,6 +267,7 @@ namespace NXRefine.UI
                     // after Update has left its reentrancy guard.
                     faceSelect.Focus();
                     Preview();
+                    QueuePreviewRefresh();
                 }
             }
             catch (Exception ex) { Error(ex); }
@@ -465,11 +458,6 @@ namespace NXRefine.UI
             return groups.SelectMany(group => group).Where(face => retained.Contains(face.Tag)).ToArray();
         }
 
-        private int RetainedGroupCount()
-        {
-            return groups.Count(group => group.All(face => retained.Contains(face.Tag)));
-        }
-
         private void SyncCollector()
         {
             TaggedObject[] selected = carriers.Values.Cast<TaggedObject>()
@@ -483,14 +471,35 @@ namespace NXRefine.UI
             // changes and can clear programmatic UF highlights after Update
             // has returned. Reapply the retained snapshot after focus enters a
             // selection block so the viewport and collector count stay aligned.
-            if (isFocus && ready && !updating) Preview();
+            if (isFocus && ready && !updating)
+            {
+                Preview();
+                QueuePreviewRefresh();
+            }
         }
 
         private void KeyboardFocusChanged(UIBlock block, bool isFocus)
         {
             if (!ready || updating) return;
             // Do not restore excluded groups merely because focus changed.
-            if (isFocus && previewValid) Preview();
+            if (isFocus && previewValid)
+            {
+                Preview();
+                QueuePreviewRefresh();
+            }
+        }
+
+        private void QueuePreviewRefresh()
+        {
+            if (!ready) return;
+            previewTimer.Stop();
+            previewTimer.Start();
+        }
+
+        private void RefreshPreview(object sender, EventArgs args)
+        {
+            previewTimer.Stop();
+            if (ready && !updating) Preview();
         }
 
         private void Preview()
@@ -503,12 +512,11 @@ namespace NXRefine.UI
                 .Distinct()
                 .ToArray();
 
-            // SetSelectedObjects has already asked the native FaceCollector to
-            // display every retained face.  Do not unhighlight those same faces
-            // here: clearing all candidates after populating the collector lets
-            // Block Styler's deferred repaint restore the previous visual state.
-            // Only clear faces that the user excluded, then reinforce the exact
-            // retained snapshot in one batch.
+            // Carrier faces stay in the merged native collector as protected
+            // search references, but only deletion candidates are highlighted.
+            // Reapply both states after every collector/focus repaint because
+            // Block Styler may otherwise visually select every stored object.
+            SetHighlights(carriers.Keys.ToArray(), 0);
             SetHighlights(excludedTags, 0);
             SetHighlights(retainedTags.ToArray(), 1);
             context.UF.Disp.Refresh();
@@ -542,6 +550,7 @@ namespace NXRefine.UI
         private void Reset()
         {
             heightTimer.Stop();
+            previewTimer.Stop();
             previewValid = false;
             updating = true;
             try
@@ -568,8 +577,7 @@ namespace NXRefine.UI
                 {
                     // If an edit arrived immediately before Apply, refresh the
                     // preview and require another Apply after it can be reviewed.
-                    if (Update(maxHeight) == 0)
-                        status.Label += " Preview refreshed; review it before Apply.";
+                    Update(maxHeight);
                     return 1;
                 }
             }
@@ -600,7 +608,6 @@ namespace NXRefine.UI
                     builder.Destroy();
                     builder = null;
                 }
-                status.Label = "Applied. Select one or more carriers for another pass. NX Undo reverses an applied pass.";
                 context.Log("Removed " + selected.Length + " marking candidate faces.");
                 return 0;
             }
@@ -618,10 +625,10 @@ namespace NXRefine.UI
 
         private int Error(Exception ex)
         {
+            previewTimer.Stop();
             previewValid = false;
             ClearPreview();
             context.Log(ex.ToString());
-            if (status != null) status.Label = "Failed: " + ex.Message;
             return 1;
         }
 
@@ -629,6 +636,8 @@ namespace NXRefine.UI
         {
             heightTimer.Stop();
             heightTimer.Dispose();
+            previewTimer.Stop();
+            previewTimer.Dispose();
             // The global selection owner is restored only after Block Styler has
             // released its dialog. Clear it both before and after Dispose so a
             // title-bar close or native Cancel cannot leave the carrier/body
