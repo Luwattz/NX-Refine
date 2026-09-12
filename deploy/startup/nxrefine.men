@@ -24,7 +24,7 @@ ACTIONS NXRefine.FillHoles.dll
 
 BUTTON NX_REFINE_REMOVE_MARKINGS
 LABEL Remove Markings
-MESSAGE Find and review connected marking face groups on a selected body.
+MESSAGE Select multiple carrier faces and review their connected marking candidates.
 BITMAP text
 ACTIONS NXRefine.RemoveMarkings.dll
 

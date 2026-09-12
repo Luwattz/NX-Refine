@@ -9,7 +9,6 @@ using NXOpen.BlockStyler;
 using NXOpen.Features;
 using NXOpen.UF;
 using NXRefine.Core;
-using SelectObject = NXOpen.BlockStyler.SelectObject;
 
 namespace NXRefine.UI
 {
@@ -18,13 +17,11 @@ namespace NXRefine.UI
         private readonly NxContext context;
         private readonly BlockDialog dialog;
         private readonly System.Windows.Forms.Timer heightTimer;
-        private SelectObject carrierSelect;
-        private FaceCollector keptSelect;
+        private FaceCollector faceSelect;
         private StringBlock maxHeight;
         private string heightText = "2";
         private NXOpen.BlockStyler.Label status;
-        private Body body;
-        private Face carrier;
+        private readonly Dictionary<Tag, Face> carriers = new Dictionary<Tag, Face>();
         private readonly List<Face[]> groups = new List<Face[]>();
         private readonly HashSet<Tag> retained = new HashSet<Tag>();
         private double activeMaxHeight = 2.0;
@@ -68,21 +65,16 @@ namespace NXRefine.UI
 
         private void Initialize()
         {
-            carrierSelect = (SelectObject)dialog.TopBlock.FindBlock("carrier");
-            keptSelect = (FaceCollector)dialog.TopBlock.FindBlock("faces");
+            faceSelect = (FaceCollector)dialog.TopBlock.FindBlock("selection");
             maxHeight = (StringBlock)dialog.TopBlock.FindBlock("heightInput");
             status = (NXOpen.BlockStyler.Label)dialog.TopBlock.FindBlock("status");
-            var mask = new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_ANY_FACE);
-            carrierSelect.SetSelectionFilter(Selection.SelectionAction.ClearAndEnableSpecific, new[] { mask });
-            carrierSelect.MaximumScopeAsString = "Within Work Part Only";
-            keptSelect.EntityType = 16; // Faces
-            keptSelect.MaximumScopeAsString = "Within Work Part Only";
-            // Keep the native NX selection-intent menu on the review collector:
-            // one click represents all faces belonging to a boss or pocket
-            // (including a connected character), rather than a single face.
-            keptSelect.FaceRules = 2048; // Boss and Pocket Faces
-            keptSelect.DefaultFaceRulesAsString = "Boss and Pocket Faces";
-            keptSelect.PopupMenuEnabled = true;
+            faceSelect.EntityType = 16; // Faces
+            faceSelect.MaximumScopeAsString = "Within Work Part Only";
+            // The merged collector must accept one carrier face at a time, but
+            // keeps NX's boss/pocket rule available for candidate review.
+            faceSelect.FaceRules = 2049; // Single Face | Boss and Pocket Faces
+            faceSelect.DefaultFaceRulesAsString = "Single Face";
+            faceSelect.PopupMenuEnabled = true;
             // StringBlock exposes uncommitted text through an NX-native callback;
             // DoubleBlock only exposes the last committed numeric value.
             maxHeight.RetainValue = false;
@@ -90,7 +82,7 @@ namespace NXRefine.UI
             maxHeight.SetKeystrokeCallback(HeightEdited);
             activeMaxHeight = 2.0;
             ready = true;
-            status.Label = "Select the lettering carrier face (its body is the search scope). Connected boss and pocket faces within the height limits will be highlighted.";
+            status.Label = "Select one or more carrier faces. Candidates for every carrier are added to this same selection collector and highlighted.";
         }
 
         private int Update(UIBlock block)
@@ -105,48 +97,85 @@ namespace NXRefine.UI
                 if (blockName == "heightInput" && previewValid &&
                     !heightTimer.Enabled && ReadMaximumHeight() == activeMaxHeight)
                     return 0;
-                // Block Styler may supply a fresh managed wrapper for an
-                // update event, so compare the stable block id rather than
-                // relying on managed object reference equality.  In
-                // particular, changing Max feature height must rescan rather
-                // than merely repainting the previous candidate list.
-                if (blockName == "carrier" || blockName == "heightInput" || blockName == "find")
-                {
-                    heightTimer.Stop();
-                    previewValid = false;
-                    ClearPreview();
-                    keptSelect.SetSelectedObjects(new TaggedObject[0]);
-                    groups.Clear();
-                    retained.Clear();
-                    activeMaxHeight = ReadMaximumHeight();
-                    Face[] selected = carrierSelect.GetSelectedObjects().OfType<Face>().ToArray();
-                    if (selected.Length != 1) { status.Label = "Select exactly one carrier face."; return 0; }
-                    carrier = selected[0];
-                    body = carrier.GetBody();
-                    if (carrier.IsOccurrence || !body.IsSolidBody)
-                        throw new InvalidOperationException("Select a solid-body face in the work part.");
-                    Scan(activeMaxHeight);
-                    foreach (Face face in groups.SelectMany(group => group)) retained.Add(face.Tag);
-                    SyncCollector();
-                    previewValid = true;
-                }
-                else if (blockName == "faces")
-                {
-                    // Removing one face from the native collector excludes its complete connected group.
-                    var collectorTags = new HashSet<Tag>(keptSelect.GetSelectedObjects().Select(o => o.Tag));
-                    retained.Clear();
-                    foreach (Face[] group in groups.Where(group => group.All(face => collectorTags.Contains(face.Tag))))
-                        foreach (Face face in group) retained.Add(face.Tag);
-                    SyncCollector();
-                }
+                if (blockName == "heightInput" || blockName == "find") RebuildCandidates();
+                else if (blockName == "selection") UpdateMergedSelection();
                 Preview();
-                status.Label = RetainedGroupCount() + " connected boss/pocket groups; " + retained.Count +
-                    " faces retained. Maximum height " + ToMillimeters(activeMaxHeight).ToString("0.###") +
-                    " mm. Review bosses and holes before Apply.";
+                UpdateStatus();
                 return 0;
             }
             catch (Exception ex) { return Error(ex); }
             finally { updating = false; }
+        }
+
+        private void UpdateMergedSelection()
+        {
+            Face[] selected = faceSelect.GetSelectedObjects().OfType<Face>()
+                .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
+            var selectedTags = new HashSet<Tag>(selected.Select(face => face.Tag));
+            var candidateTags = new HashSet<Tag>(groups.SelectMany(group => group).Select(face => face.Tag));
+            bool carriersChanged = false;
+
+            foreach (Tag removed in carriers.Keys.Where(tag => !selectedTags.Contains(tag)).ToArray())
+            {
+                carriers.Remove(removed);
+                carriersChanged = true;
+            }
+
+            // Anything newly selected that is not a known candidate is a new
+            // carrier. Programmatically appended candidates therefore never
+            // become deletion reference faces by accident.
+            foreach (Face face in selected.Where(face => !carriers.ContainsKey(face.Tag) && !candidateTags.Contains(face.Tag)))
+            {
+                Body selectedBody = face.GetBody();
+                if (face.IsOccurrence || selectedBody == null || !selectedBody.IsSolidBody)
+                    throw new InvalidOperationException("Select solid-body carrier faces in the work part.");
+                carriers.Add(face.Tag, face);
+                carriersChanged = true;
+            }
+
+            if (carriersChanged)
+            {
+                RebuildCandidates();
+                return;
+            }
+
+            // Removing any face from a candidate excludes its complete
+            // connected group. Carrier faces remain selected and protected.
+            retained.Clear();
+            foreach (Face[] group in groups.Where(group => group.All(face => selectedTags.Contains(face.Tag))))
+                foreach (Face face in group) retained.Add(face.Tag);
+            SyncCollector();
+            previewValid = carriers.Count > 0;
+        }
+
+        private void RebuildCandidates()
+        {
+            heightTimer.Stop();
+            previewValid = false;
+            ClearPreview();
+            groups.Clear();
+            retained.Clear();
+            SyncCollector();
+            activeMaxHeight = ReadMaximumHeight();
+            if (carriers.Count == 0) return;
+            Scan(activeMaxHeight);
+            foreach (Face face in groups.SelectMany(group => group)) retained.Add(face.Tag);
+            SyncCollector();
+            previewValid = true;
+        }
+
+        private void UpdateStatus()
+        {
+            if (carriers.Count == 0)
+            {
+                status.Label = "Select one or more carrier faces. Candidates will be added to this same selection collector.";
+                return;
+            }
+            status.Label = carriers.Count + " carrier faces; " + RetainedGroupCount() +
+                " connected candidate groups; " + retained.Count +
+                " candidate faces retained. Maximum height " +
+                ToMillimeters(activeMaxHeight).ToString("0.###") +
+                " mm. Carrier faces are protected from deletion.";
         }
 
         private int Cancel()
@@ -160,13 +189,11 @@ namespace NXRefine.UI
             try
             {
                 ClearPreview();
-                if (keptSelect != null) keptSelect.SetSelectedObjects(new TaggedObject[0]);
-                if (carrierSelect != null) carrierSelect.SetSelectedObjects(new TaggedObject[0]);
+                if (faceSelect != null) faceSelect.SetSelectedObjects(new TaggedObject[0]);
                 context.UI.SelectionManager.ClearGlobalSelectionList();
+                carriers.Clear();
                 groups.Clear();
                 retained.Clear();
-                carrier = null;
-                body = null;
                 ready = false;
             }
             catch (Exception ex)
@@ -222,10 +249,10 @@ namespace NXRefine.UI
             try
             {
                 // Invalidate the complete previous selection before rebuilding.
-                keptSelect.SetSelectedObjects(new TaggedObject[0]);
                 ClearPreview();
                 groups.Clear();
                 retained.Clear();
+                SyncCollector();
                 status.Label = "Updating candidates for maximum height " + heightText + " mm...";
                 heightTimer.Start();
             }
@@ -246,7 +273,7 @@ namespace NXRefine.UI
                     // Native selection focus is independent of the text caret.
                     // Finish the native collector repaint and button validation
                     // after Update has left its reentrancy guard.
-                    keptSelect.Focus();
+                    faceSelect.Focus();
                     Preview();
                 }
             }
@@ -264,23 +291,49 @@ namespace NXRefine.UI
         {
             if (maximumHeight <= 0 || double.IsNaN(maximumHeight) || double.IsInfinity(maximumHeight))
                 throw new InvalidOperationException("Maximum feature height must be positive.");
-            var faces = body.GetFaces().Where(f => f.Tag != carrier.Tag).ToDictionary(f => f.Tag);
+            var acceptedHeights = new List<double>();
+            int rejectedByHeight = 0;
+            foreach (IGrouping<Tag, Face> bodyCarriers in carriers.Values.GroupBy(face => face.GetBody().Tag))
+                ScanBody(bodyCarriers.First().GetBody(), bodyCarriers.ToArray(), maximumHeight,
+                    acceptedHeights, ref rejectedByHeight);
+            context.Log("Remove Markings scan: " + carriers.Count + " carrier faces, max height " +
+                ToMillimeters(maximumHeight).ToString("0.###") + " mm (part value " + maximumHeight.ToString("0.###") + ")" +
+                ", accepted topology groups " + acceptedHeights.Count +
+                (acceptedHeights.Count == 0 ? string.Empty :
+                    ", measured heights mm " + string.Join(", ", acceptedHeights.Select(value => ToMillimeters(value).ToString("0.###")))) +
+                ", rejected above maximum " + rejectedByHeight + ".");
+        }
+
+        private void ScanBody(Body body, Face[] bodyCarriers, double maximumHeight,
+            IList<double> acceptedHeights, ref int rejectedByHeight)
+        {
+            var carrierTags = new HashSet<Tag>(bodyCarriers.Select(face => face.Tag));
+            var faces = body.GetFaces().Where(face => !carrierTags.Contains(face.Tag)).ToDictionary(face => face.Tag);
             var adjacency = faces.Keys.ToDictionary(tag => tag, tag => new HashSet<Tag>());
             var boundary = new HashSet<Tag>();
+            var references = new Dictionary<Tag, HashSet<Tag>>();
             foreach (Edge edge in body.GetEdges())
             {
                 Face[] touching = edge.GetFaces();
-                bool atCarrier = touching.Any(f => f.Tag == carrier.Tag);
+                Face[] touchingCarriers = touching.Where(face => carrierTags.Contains(face.Tag)).ToArray();
                 foreach (Face face in touching.Where(f => faces.ContainsKey(f.Tag)))
                 {
-                    if (atCarrier) boundary.Add(face.Tag);
+                    if (touchingCarriers.Length > 0)
+                    {
+                        boundary.Add(face.Tag);
+                        HashSet<Tag> faceReferences;
+                        if (!references.TryGetValue(face.Tag, out faceReferences))
+                        {
+                            faceReferences = new HashSet<Tag>();
+                            references.Add(face.Tag, faceReferences);
+                        }
+                        foreach (Face reference in touchingCarriers) faceReferences.Add(reference.Tag);
+                    }
                     foreach (Face other in touching.Where(f => faces.ContainsKey(f.Tag) && f.Tag != face.Tag))
                         adjacency[face.Tag].Add(other.Tag);
                 }
             }
             var seen = new HashSet<Tag>();
-            var acceptedHeights = new List<double>();
-            int rejectedByHeight = 0;
             foreach (Tag seed in boundary)
             {
                 if (seen.Contains(seed)) continue;
@@ -292,7 +345,13 @@ namespace NXRefine.UI
                 Face[] component = ConnectedComponent(seed, faces, adjacency);
                 if (component.Length == 0) continue;
                 foreach (Face face in component) seen.Add(face.Tag);
-                double height = FeatureHeight(component);
+                Face[] componentCarriers = component.SelectMany(face =>
+                    references.ContainsKey(face.Tag) ? references[face.Tag] : Enumerable.Empty<Tag>())
+                    .Distinct().Where(carrierTags.Contains).Select(tag => carriers[tag]).ToArray();
+                if (componentCarriers.Length == 0) continue;
+                // A group touching more than one selected carrier is accepted
+                // when it satisfies the height limit relative to any carrier.
+                double height = componentCarriers.Min(reference => FeatureHeight(component, reference));
                 double heightTolerance = Math.Max(1e-6, maximumHeight * 1e-6);
                 if (height <= maximumHeight + heightTolerance && component.Length < faces.Count)
                 {
@@ -302,11 +361,6 @@ namespace NXRefine.UI
                 else if (height > maximumHeight)
                     rejectedByHeight++;
             }
-            context.Log("Remove Markings scan: max height " + ToMillimeters(maximumHeight).ToString("0.###") + " mm (part value " + maximumHeight.ToString("0.###") + ")" +
-                ", accepted topology groups " + acceptedHeights.Count +
-                (acceptedHeights.Count == 0 ? string.Empty :
-                    ", measured heights " + string.Join(", ", acceptedHeights.Select(value => value.ToString("0.###")))) +
-                ", rejected above maximum " + rejectedByHeight + ".");
         }
 
         private Face[] ConnectedComponent(Tag seed, IDictionary<Tag, Face> faces, IDictionary<Tag, HashSet<Tag>> adjacency)
@@ -326,7 +380,7 @@ namespace NXRefine.UI
             return component.ToArray();
         }
 
-        private double FeatureHeight(IEnumerable<Face> faces)
+        private double FeatureHeight(IEnumerable<Face> faces, Face carrier)
         {
             // The selected carrier supplies the reference normal. Projecting
             // actual topology vertices onto that normal measures height without
@@ -418,7 +472,9 @@ namespace NXRefine.UI
 
         private void SyncCollector()
         {
-            keptSelect.SetSelectedObjects(RetainedFaces().Cast<TaggedObject>().ToArray());
+            TaggedObject[] selected = carriers.Values.Cast<TaggedObject>()
+                .Concat(RetainedFaces().Cast<TaggedObject>()).ToArray();
+            faceSelect.SetSelectedObjects(selected);
         }
 
         private void SelectionFocusChanged(UIBlock block, bool isFocus)
@@ -492,15 +548,13 @@ namespace NXRefine.UI
             {
                 if (ready)
                 {
-                    keptSelect.SetSelectedObjects(new TaggedObject[0]);
-                    carrierSelect.SetSelectedObjects(new TaggedObject[0]);
+                    faceSelect.SetSelectedObjects(new TaggedObject[0]);
                     context.UI.SelectionManager.ClearGlobalSelectionList();
                 }
                 ClearPreview();
+                carriers.Clear();
                 groups.Clear();
                 retained.Clear();
-                carrier = null;
-                body = null;
             }
             finally { updating = false; }
         }
@@ -531,13 +585,22 @@ namespace NXRefine.UI
             {
                 // Release native selections and highlights while all face handles are still valid.
                 Reset();
-                builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
-                builder.Type = DeleteFaceBuilder.SelectTypes.Face;
-                builder.Heal = true;
-                builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] {
-                    context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(selected) }, false);
-                builder.CommitFeature();
-                status.Label = "Applied. Select a carrier for another pass. NX Undo reverses an applied pass.";
+                // Delete Face operates on one target body at a time. Multiple
+                // carrier faces may span bodies, so commit each body inside the
+                // same undo mark and roll the whole pass back if any heal fails.
+                foreach (Face[] bodyFaces in selected.GroupBy(face => face.GetBody().Tag)
+                    .Select(group => group.ToArray()))
+                {
+                    builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
+                    builder.Type = DeleteFaceBuilder.SelectTypes.Face;
+                    builder.Heal = true;
+                    builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] {
+                        context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(bodyFaces) }, false);
+                    builder.CommitFeature();
+                    builder.Destroy();
+                    builder = null;
+                }
+                status.Label = "Applied. Select one or more carriers for another pass. NX Undo reverses an applied pass.";
                 context.Log("Removed " + selected.Length + " marking candidate faces.");
                 return 0;
             }

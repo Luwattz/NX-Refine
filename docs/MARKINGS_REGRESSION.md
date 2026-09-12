@@ -6,8 +6,8 @@ integration checklist: compilation alone cannot verify native selection repaint.
 
 ## Input, preview, and selection
 
-1. Open Remove Markings and select the carrier. Confirm the default maximum is 2
-   mm.
+1. Open Remove Markings and confirm that there is one merged **Carrier faces and
+   candidates** collector. Select a carrier and confirm the default maximum is 2 mm.
 2. Replace the maximum (in mm) with 20, then 2, then 5, then 2 without pressing Enter or
    clicking Find Candidates. Pause briefly after each edit. The status maximum,
    collector count, and highlighted faces must all reflect the new threshold.
@@ -15,15 +15,19 @@ integration checklist: compilation alone cannot verify native selection repaint.
    OK and Apply must be disabled until a valid preview is ready. After rebuilding,
    both must become available without an extra click on the face collector.
 4. Verify that lowering the threshold removes tall-boss highlights and that
-   increasing it includes qualifying connected characters. The carrier must
-   not be in the deletion collector (it can be highlighted by its own selector).
+   increasing it includes qualifying connected characters. The carrier and
+   candidates must appear in the same collector, while the status reports their
+   counts separately.
 5. Enter invalid text, zero, a negative value, and an empty string. No previous
    candidates may remain actionable. Restore a valid positive value and verify
    that candidates and button availability recover.
-6. Deselect a connected character. All its faces must leave the collector and
+6. Add a second carrier face and verify that its candidates are appended and
+   highlighted without losing the first carrier. Deselect one carrier and verify
+   that candidates are rebuilt for the carriers that remain.
+7. Deselect a connected character. All its faces must leave the collector and
    preview. Focusing the height field without changing it must not restore it.
    Find Candidates / Restore All must restore it.
-7. Cancel and reopen. The old preview must clear and the new dialog must start
+8. Cancel and reopen. The old preview must clear and the new dialog must start
    with no carrier or candidates. Move the pointer off the model to distinguish
    NX's red hover preselection from an actual retained highlight.
 
