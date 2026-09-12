@@ -18,7 +18,7 @@ ACTIONS NXRefine.RemoveBlends.dll
 
 BUTTON NX_REFINE_FILL_HOLES
 LABEL Fill Holes
-MESSAGE Fill cylindrical hole candidates below the configured diameter.
+MESSAGE Select target entities, set a maximum hole radius, and review hole faces before filling.
 BITMAP hole
 ACTIONS NXRefine.FillHoles.dll
 

@@ -15,6 +15,7 @@ namespace NXRefine.Core
             SewTolerance = 0.01;
             SharpAngle = 10.0;
             RemoveMarkingsMaxHeightMm = 2.0;
+            FillHolesMaxRadius = 4.0;
             ConfirmBeforeRepair = true;
         }
 
@@ -25,6 +26,7 @@ namespace NXRefine.Core
         public double SewTolerance { get; set; }
         public double SharpAngle { get; set; }
         public double RemoveMarkingsMaxHeightMm { get; set; }
+        public double FillHolesMaxRadius { get; set; }
         public bool ConfirmBeforeRepair { get; set; }
 
         public static string SettingsPath
@@ -60,6 +62,10 @@ namespace NXRefine.Core
                         if (TryNumber(parts[1], out number) && number > 0.0 && number <= 100000.0)
                             settings.RemoveMarkingsMaxHeightMm = number;
                         break;
+                    case "FillHolesMaxRadius":
+                        if (TryNumber(parts[1], out number) && number <= 100000.0)
+                            settings.FillHolesMaxRadius = number;
+                        break;
                     case "ConfirmBeforeRepair": if (bool.TryParse(parts[1], out flag)) settings.ConfirmBeforeRepair = flag; break;
                 }
             }
@@ -72,7 +78,7 @@ namespace NXRefine.Core
             Directory.CreateDirectory(directory);
             File.WriteAllLines(SettingsPath, new[]
             {
-                "# NX Refine settings. Geometric thresholds use the current part unit; RemoveMarkingsMaxHeightMm is always millimetres.",
+                "# NX Refine settings. Geometric thresholds use the current part unit; RemoveMarkingsMaxHeightMm is millimetres.",
                 "SmallFaceArea=" + Format(SmallFaceArea),
                 "ShortEdgeLength=" + Format(ShortEdgeLength),
                 "MaxBlendRadius=" + Format(MaxBlendRadius),
@@ -80,6 +86,7 @@ namespace NXRefine.Core
                 "SewTolerance=" + Format(SewTolerance),
                 "SharpAngle=" + Format(SharpAngle),
                 "RemoveMarkingsMaxHeightMm=" + Format(RemoveMarkingsMaxHeightMm),
+                "FillHolesMaxRadius=" + Format(FillHolesMaxRadius),
                 "ConfirmBeforeRepair=" + ConfirmBeforeRepair
             });
         }
