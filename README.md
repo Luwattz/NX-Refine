@@ -112,14 +112,14 @@ Fill Holes uses an NX native Block Styler dialog with OK / Apply / Cancel naviga
 
 1. Select one or more solid bodies in **Target entities**. The selection is limited to the work part and is used as the search scope.
 2. Enter **Max hole radius (part units)**. A value of `0` means no radius limit; otherwise only cylindrical faces whose radius is at or below the value are candidates.
-3. Candidate cylindrical hole faces are highlighted and recorded in **Hole faces to fill**. The collector accepts multiple faces. Deselecting any face removes its complete connected candidate region from the pending operation.
+3. Inner-facing cylindrical hole seeds and their connected cavity surfaces are highlighted and recorded in **Hole faces to fill**. Exterior cylindrical bosses/walls are rejected by their face orientation. The collector accepts multiple faces. Deselecting any face removes its complete connected candidate region from the pending operation.
 4. **Apply** fills the retained hole faces and leaves the dialog open for another pass. **OK** fills and closes. **Cancel** or Escape clears the preview without modifying the part. Each pass uses one NX undo mark and failed multi-body healing rolls back the whole pass.
 
 Keep `deploy/application/NXRefine.FillHoles.dlx` beside `NXRefine.dll`; this is the native dialog layout required at runtime. This preview identifies cylindrical faces geometrically; imported bosses and partial cylinders may require manual deselection.
 
 ## Known limitations
 
-- A cylindrical face is only a hole candidate; imported bosses and partial cylinders can require manual review.
+- Hole detection starts from an inner-facing cylindrical wall and follows connected cavity-facing surfaces; imported bosses, partial cylinders, and unusual face orientations can still require manual review.
 - Small-face deletion is heuristic and may fail when adjacent surfaces cannot be extended safely.
 - `Repair Sheets` currently operates on all sheet bodies in the work part.
 - Arbitrary cavity removal, patterned-face replacement, and missing-face surface reconstruction require topology-aware algorithms planned for later releases.

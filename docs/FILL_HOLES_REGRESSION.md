@@ -11,9 +11,10 @@ multi-face counterbore region.
    lower multiple **Hole faces to fill** selector with OK, Apply, and Cancel.
 2. Select one body, then a second body. Candidates from both bodies must be
    highlighted and remain in the lower collector.
-3. Enter `0`. Cylindrical faces of every radius in the selected bodies may be
-   preview candidates. Enter a positive radius and verify faces above that
-   radius are not highlighted or selected.
+3. Enter `0`. Inner-facing cylindrical hole regions of every radius in the
+   selected bodies may be preview candidates, while exterior cylindrical walls
+   remain unselected. Enter a positive radius and verify regions containing an
+   inner cylinder above that radius are not highlighted or selected.
 4. Deselect one face in a connected counterbore region. The complete connected
    candidate region must leave the lower collector and preview. Use the native
    collector to restore it and verify it returns.

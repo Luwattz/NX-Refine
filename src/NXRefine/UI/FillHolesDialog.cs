@@ -209,12 +209,8 @@ namespace NXRefine.UI
 
         private Face[][] FindGroups(Body body, double maximumRadius)
         {
-            Face[] candidates = body.GetFaces().Where(face =>
-            {
-                double radius;
-                return TryGetCylinderRadius(face, out radius) && (maximumRadius == 0.0 || radius <= maximumRadius);
-            }).ToArray();
-            var faces = candidates.ToDictionary(face => face.Tag);
+            Face[] allFaces = body.GetFaces();
+            var faces = allFaces.ToDictionary(face => face.Tag);
             var adjacency = faces.Keys.ToDictionary(tag => tag, tag => new HashSet<Tag>());
             foreach (Edge edge in body.GetEdges())
             {
@@ -226,44 +222,136 @@ namespace NXRefine.UI
                         adjacency[touching[j].Tag].Add(touching[i].Tag);
                     }
             }
+            var seeds = new List<HoleSeed>();
+            foreach (Face face in allFaces)
+            {
+                HoleSeed seed;
+                if (TryGetInnerCylinder(face, body, out seed) &&
+                    (maximumRadius == 0.0 || seed.Radius <= maximumRadius))
+                    seeds.Add(seed);
+            }
             var result = new List<Face[]>();
             var seen = new HashSet<Tag>();
-            foreach (Tag seed in faces.Keys)
+            foreach (HoleSeed seed in seeds)
             {
-                if (seen.Contains(seed)) continue;
+                if (seen.Contains(seed.Face.Tag)) continue;
                 var component = new List<Face>();
                 var queue = new Queue<Tag>();
-                queue.Enqueue(seed);
+                queue.Enqueue(seed.Face.Tag);
                 while (queue.Count > 0)
                 {
                     Tag tag = queue.Dequeue();
                     if (!seen.Add(tag)) continue;
                     component.Add(faces[tag]);
                     foreach (Tag next in adjacency[tag])
-                        if (!seen.Contains(next)) queue.Enqueue(next);
+                    {
+                        if (seen.Contains(next)) continue;
+                        Face neighbor = faces[next];
+                        if (IsCavityFacing(neighbor, seed.VoidPoint)) queue.Enqueue(next);
+                    }
                 }
+                // A stepped/counterbored hole is one connected region. Its
+                // largest inner cylindrical radius must satisfy the limit.
+                if (maximumRadius > 0.0 && component.Any(face =>
+                {
+                    HoleSeed inner;
+                    return TryGetInnerCylinder(face, body, out inner) && inner.Radius > maximumRadius;
+                })) continue;
                 result.Add(component.ToArray());
             }
             return result.ToArray();
         }
 
-        private bool TryGetCylinderRadius(Face face, out double radius)
+        private bool TryGetInnerCylinder(Face face, Body body, out HoleSeed seed)
         {
-            radius = 0.0;
+            seed = null;
             if (face.SolidFaceType != Face.FaceType.Cylindrical) return false;
             try
             {
                 int type;
                 int normalDirection;
                 double radiusData;
-                double[] point = new double[3];
-                double[] direction = new double[3];
+                double[] axisPoint = new double[3];
+                double[] axisDirection = new double[3];
                 double[] box = new double[6];
-                context.UF.Modl.AskFaceData(face.Tag, out type, point, direction, box,
+                double radius;
+                context.UF.Modl.AskFaceData(face.Tag, out type, axisPoint, axisDirection, box,
                     out radius, out radiusData, out normalDirection);
-                return radius > 0.0 && !double.IsNaN(radius) && !double.IsInfinity(radius);
+                if (radius <= 0.0 || double.IsNaN(radius) || double.IsInfinity(radius)) return false;
+                double[] surfacePoint;
+                double[] surfaceNormal;
+                if (!TryGetFacePointNormal(face, out surfacePoint, out surfaceNormal)) return false;
+                double towardAxis = (axisPoint[0] - surfacePoint[0]) * surfaceNormal[0] +
+                    (axisPoint[1] - surfacePoint[1]) * surfaceNormal[1] +
+                    (axisPoint[2] - surfacePoint[2]) * surfaceNormal[2];
+                // Solid-face normals point out of the material. An inner hole
+                // wall points toward its axis; an exterior cylindrical boss
+                // points away from its axis and is therefore rejected.
+                if (towardAxis <= 1e-7) return false;
+                int containment;
+                context.UF.Modl.AskPointContainment(axisPoint, body.Tag, out containment);
+                // The cylinder axis point is in the void for an inner hole;
+                // an exterior boss has its axis point inside the solid.
+                if (containment == 1) return false;
+                seed = new HoleSeed(face, axisPoint, radius);
+                return true;
             }
             catch (NXException) { return false; }
+        }
+
+        private bool IsCavityFacing(Face face, double[] voidPoint)
+        {
+            double[] point;
+            double[] normal;
+            if (!TryGetFacePointNormal(face, out point, out normal)) return false;
+            double towardVoid = (voidPoint[0] - point[0]) * normal[0] +
+                (voidPoint[1] - point[1]) * normal[1] +
+                (voidPoint[2] - point[2]) * normal[2];
+            return towardVoid > 1e-7;
+        }
+
+        private bool TryGetFacePointNormal(Face face, out double[] point, out double[] normal)
+        {
+            point = new double[3];
+            normal = new double[3];
+            try
+            {
+                double[] box = new double[6];
+                context.UF.Modl.AskBoundingBox(face.Tag, box);
+                double[] reference = {
+                    (box[0] + box[3]) * 0.5,
+                    (box[1] + box[4]) * 0.5,
+                    (box[2] + box[5]) * 0.5 };
+                double[] parameter = new double[2];
+                context.UF.Modl.AskFaceParm(face.Tag, reference, parameter, point);
+                double[] u1 = new double[3];
+                double[] v1 = new double[3];
+                double[] u2 = new double[3];
+                double[] v2 = new double[3];
+                double[] radii = new double[2];
+                context.UF.Modl.AskFaceProps(face.Tag, parameter, point, u1, v1, u2, v2, normal, radii);
+                double length = Math.Sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+                if (length < 1e-9) return false;
+                normal[0] /= length;
+                normal[1] /= length;
+                normal[2] /= length;
+                return true;
+            }
+            catch (NXException) { return false; }
+        }
+
+        private sealed class HoleSeed
+        {
+            public HoleSeed(Face face, double[] voidPoint, double radius)
+            {
+                Face = face;
+                VoidPoint = voidPoint;
+                Radius = radius;
+            }
+
+            public Face Face { get; private set; }
+            public double[] VoidPoint { get; private set; }
+            public double Radius { get; private set; }
         }
 
         private Face[] RetainedFaces()
