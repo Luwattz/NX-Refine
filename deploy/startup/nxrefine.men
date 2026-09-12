@@ -18,7 +18,7 @@ ACTIONS NXRefine.RemoveBlends.dll
 
 BUTTON NX_REFINE_FILL_HOLES
 LABEL Fill Holes
-MESSAGE Select inner hole seed faces with Boss and Pocket Faces, set a maximum radius, and review candidates before filling.
+MESSAGE Select bodies to detect inner holes, set a maximum radius, and review the expanded hole faces.
 BITMAP hole
 ACTIONS NXRefine.FillHoles.dll
 

@@ -1,34 +1,25 @@
 # Fill Holes regression checklist
 
-Run these checks in NX 2312 on a disposable part containing several cylindrical
-holes, including holes on more than one solid body and at least one connected
-multi-face counterbore region.
+Run in NX 2312 on disposable parts; these are runtime acceptance checks,
+not results inferred from a successful build.
 
-## Dialog and preview
-
-1. Open **Fill Holes** and confirm the native dialog has a multiple **Target
-   entities** selector, a multiple **Seed inner hole faces** selector whose
-   default intent is **Boss and Pocket Faces**, a **Max hole radius (part units;
-   0 = any)** input, and a lower multiple **Hole faces to fill** selector with
-   OK, Apply, and Cancel.
-2. Select one body, then a second body. Pick an inside cylindrical ring on each
-   body. NX must expand each seed with the native Boss/Pocket intent; only the
-   corresponding cavity regions are highlighted and retained in the lower
-   collector. Exterior cylindrical walls and unrelated bosses must stay out.
-3. Enter `0`. The explicitly seeded hole regions may be preview candidates
-   regardless of radius. Enter a positive radius and verify regions containing
-   an inner cylinder above that radius are not highlighted or selected.
-4. Deselect one face in a connected counterbore region. The complete connected
-   candidate region must leave the lower collector and preview. Add another
-   seed or use the lower collector to restore it and verify it returns.
-5. Cancel and reopen. The preview and selections must clear, with no geometry
-   mutation.
-
-## Commit and persistence
-
-6. Apply on a disposable copy and verify only retained hole faces are healed;
-   the dialog remains open and supports another body selection. NX Undo must
-   reverse the complete multi-body pass.
-7. Enter a positive radius, complete Apply or OK, reopen Fill Holes, and verify
-   that the last valid radius is restored. A missing setting defaults to 4
-   current-part units; `0` remains the explicit unlimited value.
+1. Confirm exactly three controls: target bodies, maximum radius, and one
+   face collector. Select a body without clicking any individual face:
+   candidates must appear automatically.
+2. Use a blind counterbore with a floor, bottom fillet, cylindrical wall,
+   entrance face and exterior cylindrical boss. Compare the native
+   Boss and Pocket Faces selection from the inner wall to the preview.
+   The exterior boss and unrelated housing faces must remain unselected.
+3. Repeat with a through hole, multiple bodies and a cylinder whose underlying
+   axis origin is below its trimmed blind-hole floor.
+4. Change radius from a large value to a small value and to zero (unlimited).
+   Old highlights and collector contents must clear before the rebuild.
+   Positive limits must reject groups containing larger inner cylinders.
+5. Deselect a face: its entire hole group must disappear. Commit unchanged
+   radius text by moving focus: excluded groups must remain excluded.
+6. Apply/OK must use precisely the retained faces; Undo must restore the pass.
+   Apply keeps the dialog open, Cancel removes pending highlights, and
+   completion/cancellation must not open the Listing Window.
+7. Reopen after Apply/OK: the last radius must be restored.
+8. If native expansion fails, verify the NX system log identifies the seed;
+   no whole-body adjacency expansion may replace the failed rule.
