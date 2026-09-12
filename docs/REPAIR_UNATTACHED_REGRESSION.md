@@ -13,6 +13,9 @@ These checks require Siemens NX 2312 and should be run on disposable copies of t
 
 ## Detection
 
+- [ ] Repeating a native commit at the same gap, including after a scan with no candidates, does not repeat the scan. Changing bodies still rebuilds.
+- [ ] Compare candidates before/after optimization on the same part and tolerance. The NX log reports scan milliseconds and distance/containment query counts; actual speed depends on topology.
+
 - [ ] A face pair sharing a topological edge is not reported as an unattached gap.
 - [ ] Faces touching only at a vertex, zero-distance contacts, same-facing surfaces, and back-to-back thin walls are excluded.
 - [ ] A known small separation between a rib bottom and its base face is reported with only the smaller problem-side face highlighted.
