@@ -30,7 +30,7 @@ namespace NXRefine
                 {
                     case "analyze": ShowAnalysis(context, analyzer); break;
                     case "simplify": RunSimplify(context, engine); break;
-                    case "remove-blends": ReportCount(context, "small blend faces", engine.RemoveBlends()); break;
+                    case "remove-blends": using (var form = new RemoveBlendsDialog(context, settings)) form.ShowDialog(); break;
                     case "fill-holes": using (var form = new FillHolesDialog(context, settings)) form.ShowDialog(); break;
                     case "clear-cavities": using (var form = new ClearCavitiesDialog(context)) form.ShowDialog(); break;
                     case "repair-unattached": using (var form = new UnattachedFacesDialog(context, settings)) form.ShowDialog(); break;

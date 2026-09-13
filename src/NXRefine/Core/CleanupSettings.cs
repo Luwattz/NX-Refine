@@ -10,23 +10,27 @@ namespace NXRefine.Core
         {
             SmallFaceArea = 1.0;
             ShortEdgeLength = 0.5;
+            MinBlendRadius = 0.0;
             MaxBlendRadius = 3.0;
             MaxHoleDiameter = 8.0;
             SewTolerance = 0.01;
             SharpAngle = 10.0;
             RemoveMarkingsMaxHeightMm = 2.0;
             FillHolesMaxRadius = 4.0;
+            RepairUnattachedMaxGap = 0.01;
             ConfirmBeforeRepair = true;
         }
 
         public double SmallFaceArea { get; set; }
         public double ShortEdgeLength { get; set; }
+        public double MinBlendRadius { get; set; }
         public double MaxBlendRadius { get; set; }
         public double MaxHoleDiameter { get; set; }
         public double SewTolerance { get; set; }
         public double SharpAngle { get; set; }
         public double RemoveMarkingsMaxHeightMm { get; set; }
         public double FillHolesMaxRadius { get; set; }
+        public double RepairUnattachedMaxGap { get; set; }
         public bool ConfirmBeforeRepair { get; set; }
 
         public static string SettingsPath
@@ -54,6 +58,7 @@ namespace NXRefine.Core
                 {
                     case "SmallFaceArea": if (TryNumber(parts[1], out number)) settings.SmallFaceArea = number; break;
                     case "ShortEdgeLength": if (TryNumber(parts[1], out number)) settings.ShortEdgeLength = number; break;
+                    case "MinBlendRadius": if (TryNumber(parts[1], out number)) settings.MinBlendRadius = number; break;
                     case "MaxBlendRadius": if (TryNumber(parts[1], out number)) settings.MaxBlendRadius = number; break;
                     case "MaxHoleDiameter": if (TryNumber(parts[1], out number)) settings.MaxHoleDiameter = number; break;
                     case "SewTolerance": if (TryNumber(parts[1], out number)) settings.SewTolerance = number; break;
@@ -65,6 +70,10 @@ namespace NXRefine.Core
                     case "FillHolesMaxRadius":
                         if (TryNumber(parts[1], out number) && number <= 100000.0)
                             settings.FillHolesMaxRadius = number;
+                        break;
+                    case "RepairUnattachedMaxGap":
+                        if (TryNumber(parts[1], out number) && number <= 100000.0)
+                            settings.RepairUnattachedMaxGap = number;
                         break;
                     case "ConfirmBeforeRepair": if (bool.TryParse(parts[1], out flag)) settings.ConfirmBeforeRepair = flag; break;
                 }
@@ -81,12 +90,14 @@ namespace NXRefine.Core
                 "# NX Refine settings. Geometric thresholds use the current part unit; RemoveMarkingsMaxHeightMm is millimetres.",
                 "SmallFaceArea=" + Format(SmallFaceArea),
                 "ShortEdgeLength=" + Format(ShortEdgeLength),
+                "MinBlendRadius=" + Format(MinBlendRadius),
                 "MaxBlendRadius=" + Format(MaxBlendRadius),
                 "MaxHoleDiameter=" + Format(MaxHoleDiameter),
                 "SewTolerance=" + Format(SewTolerance),
                 "SharpAngle=" + Format(SharpAngle),
                 "RemoveMarkingsMaxHeightMm=" + Format(RemoveMarkingsMaxHeightMm),
                 "FillHolesMaxRadius=" + Format(FillHolesMaxRadius),
+                "RepairUnattachedMaxGap=" + Format(RepairUnattachedMaxGap),
                 "ConfirmBeforeRepair=" + ConfirmBeforeRepair
             });
         }

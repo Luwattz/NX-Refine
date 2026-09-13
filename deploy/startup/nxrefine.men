@@ -4,15 +4,9 @@ EDIT UG_GATEWAY_MAIN_MENUBAR
 
 MENU NX_REFINE_MENU
 
-BUTTON NX_REFINE_ANALYZE
-LABEL Analyze
-MESSAGE Analyze the work part for geometry quality issues.
-BITMAP checkgreen
-ACTIONS NXRefine.Analyze.dll
-
 BUTTON NX_REFINE_REMOVE_BLENDS
 LABEL Remove Blends
-MESSAGE Remove blends at or below the configured radius.
+MESSAGE Select solid bodies, filter blends by minimum and maximum radius, review faces, and remove what can be healed.
 BITMAP edge_blend
 ACTIONS NXRefine.RemoveBlends.dll
 

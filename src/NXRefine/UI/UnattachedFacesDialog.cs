@@ -22,10 +22,13 @@ namespace NXRefine.UI
     internal sealed class UnattachedFacesDialog : IDisposable
     {
         private const int MaximumPairChecks = 1000000;
+        private const int MaximumCachedMeasurements = 50000;
+        private const int MaximumCachedPointQueries = 50000;
 
         private readonly NxContext context;
         private readonly CleanupSettings settings;
         private readonly BlockDialog dialog;
+        private readonly Tag workPartTag;
         private readonly System.Windows.Forms.Timer gapTimer;
         private readonly System.Windows.Forms.Timer previewTimer;
         private SelectObject bodySelect;
@@ -45,12 +48,35 @@ namespace NXRefine.UI
         private bool scanCurrent;
         private int distanceQueries;
         private int containmentQueries;
+        private int partialProjectionCacheHits;
+        private int planarPairsRejected;
+        private int geometryRevision;
+        private int preparedRevision = -1;
+        private int planeProjectionHits;
+        private int faceContainmentQueries;
+        private int measurementCacheHits;
+        private int partialChecksSkipped;
+        private int faceGeometryQueries;
+        private int adjacencyQueries;
+        private int projectionQueryCacheHits;
+        private int normalQueryCacheHits;
+        private int containmentQueryCacheHits;
+        private int planeSamplesRejected;
+        private readonly PointQueryCache<Tag, PointProjection> projections =
+            new PointQueryCache<Tag, PointProjection>(MaximumCachedPointQueries);
+        private readonly PointQueryCache<Tag, double[]> normals =
+            new PointQueryCache<Tag, double[]>(MaximumCachedPointQueries);
+        private readonly PointQueryCache<Tag, int> containment =
+            new PointQueryCache<Tag, int>(MaximumCachedPointQueries);
+        private readonly Dictionary<KeyValuePair<Tag, Tag>, GapMeasurement> measurements =
+            new Dictionary<KeyValuePair<Tag, Tag>, GapMeasurement>(new FacePairComparer());
 
         public UnattachedFacesDialog(NxContext context, CleanupSettings settings)
         {
             this.context = context;
             this.settings = settings;
             context.RequireWorkPart();
+            workPartTag = context.WorkPart.Tag;
             string path = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location),
                 "NXRefine.RepairUnattached.dlx");
             dialog = context.UI.CreateDialog(path);
@@ -70,9 +96,19 @@ namespace NXRefine.UI
 
         public void ShowDialog()
         {
-            try { dialog.Launch(); }
+            int modifiedHandler = -1, workChangedHandler = -1, closedHandler = -1;
+            try
+            {
+                modifiedHandler = context.Session.Parts.AddPartModifiedHandler(PartGeometryChanged);
+                workChangedHandler = context.Session.Parts.AddWorkPartChangedHandler(WorkPartChanged);
+                closedHandler = context.Session.Parts.AddPartClosedHandler(PartGeometryChanged);
+                dialog.Launch();
+            }
             finally
             {
+                RemovePartHandler(modifiedHandler, context.Session.Parts.RemovePartModifiedHandler);
+                RemovePartHandler(workChangedHandler, context.Session.Parts.RemoveWorkPartChangedHandler);
+                RemovePartHandler(closedHandler, context.Session.Parts.RemovePartClosedHandler);
                 gapTimer.Stop();
                 previewTimer.Stop();
                 try { ClearPreview(); }
@@ -83,6 +119,29 @@ namespace NXRefine.UI
             }
         }
 
+        private void RemovePartHandler(int id, Action<int> remove)
+        {
+            if (id < 0) return;
+            try { remove(id); }
+            catch (NXException ex) { context.Log("Repair Unattached Faces callback cleanup: " + ex.Message); }
+        }
+
+        private void PartGeometryChanged(BasePart part)
+        {
+            if (part == null || part.Tag == workPartTag) InvalidateGeometry();
+        }
+
+        private void WorkPartChanged(BasePart previousPart) { InvalidateGeometry(); }
+
+        private void InvalidateGeometry()
+        {
+            // NX callbacks only mark data stale. Never mutate a collection
+            // while an NX query in the scan might be enumerating it.
+            geometryRevision++;
+            scanCurrent = false;
+            previewValid = false;
+        }
+
         private void Initialize()
         {
             bodySelect = (SelectObject)dialog.TopBlock.FindBlock("bodies");
@@ -91,7 +150,7 @@ namespace NXRefine.UI
             bodySelect.MaximumScopeAsString = "Within Work Part Only";
 
             maxGap = (StringBlock)dialog.TopBlock.FindBlock("maxGap");
-            gapText = settings.SewTolerance.ToString("0.########", CultureInfo.InvariantCulture);
+            gapText = settings.RepairUnattachedMaxGap.ToString("0.########", CultureInfo.InvariantCulture);
             maxGap.RetainValue = false;
             maxGap.Value = gapText;
             maxGap.SetKeystrokeCallback(GapEdited);
@@ -144,8 +203,13 @@ namespace NXRefine.UI
                 .Where(body => !body.IsOccurrence && body.IsSolidBody)
                 .GroupBy(body => body.Tag).Select(group => group.First()).ToArray();
             var selectedTags = new HashSet<Tag>(selected.Select(body => body.Tag));
-            if (selectedTags.SetEquals(bodies.Keys)) return;
+            if (selectedTags.SetEquals(bodies.Keys))
+            {
+                if (!scanCurrent) RebuildCandidates();
+                return;
+            }
             ClearPreview();
+            InvalidateGeometry();
             bodies.Clear();
             foreach (Body body in selected) bodies[body.Tag] = body;
             RebuildCandidates();
@@ -153,6 +217,7 @@ namespace NXRefine.UI
 
         private void UpdateFaceSelection()
         {
+            if (!scanCurrent) { RebuildCandidates(); return; }
             var selectedTags = new HashSet<Tag>(faceSelect.GetSelectedObjects().OfType<Face>()
                 .Select(face => face.Tag));
             retained.Clear();
@@ -168,31 +233,57 @@ namespace NXRefine.UI
         {
             Stopwatch elapsed = Stopwatch.StartNew();
             distanceQueries = containmentQueries = 0;
+            partialProjectionCacheHits = planarPairsRejected = 0;
+            planeProjectionHits = faceContainmentQueries = measurementCacheHits = partialChecksSkipped = faceGeometryQueries = 0;
+            adjacencyQueries = projectionQueryCacheHits = normalQueryCacheHits = containmentQueryCacheHits = planeSamplesRejected = 0;
             scanCurrent = false;
             gapTimer.Stop();
             previewTimer.Stop();
             previewValid = false;
             ClearPreview();
-            faces.Clear();
             groups.Clear();
             retained.Clear();
             if (faceSelect != null) faceSelect.SetSelectedObjects(new TaggedObject[0]);
             activeGap = ReadMaximumGap();
+            settings.RepairUnattachedMaxGap = activeGap;
+            settings.Save();
 
             // Numerical zero in part units, independent of the user's search limit.
+            if (context.WorkPart == null || context.WorkPart.Tag != workPartTag)
+                throw new InvalidOperationException("The work part changed. Reopen Repair Unattached Faces in the current work part.");
             gapResolution = context.WorkPart.PartUnits == BasePart.Units.Inches ? 1e-6 / 25.4 : 1e-6;
             // A zero/sub-resolution limit cannot contain any positive gap.
             if (activeGap <= gapResolution) { scanCurrent = true; return; }
-            foreach (Body body in bodies.Values) AddBodyFaces(body);
-            BuildTopologicalAdjacency();
+            int scanRevision = geometryRevision;
+            bool reusedGeometry = preparedRevision == scanRevision;
+            if (!reusedGeometry)
+            {
+                faces.Clear();
+                measurements.Clear();
+                ClearPointQueries();
+                foreach (Body body in bodies.Values) AddBodyFaces(body);
+                preparedRevision = scanRevision;
+            }
+            long preparationMilliseconds = elapsed.ElapsedMilliseconds;
             groups.AddRange(FindGapGroups());
+            long searchMilliseconds = elapsed.ElapsedMilliseconds - preparationMilliseconds;
             foreach (Face face in groups.SelectMany(group => group.Faces)) retained.Add(face.Tag);
             SyncFaceCollector();
+            if (geometryRevision != scanRevision)
+                throw new InvalidOperationException("Geometry changed during the scan. Reselect the bodies to scan again.");
             previewValid = groups.Count > 0;
             scanCurrent = true;
             context.Log("Repair Unattached Faces scan: " + elapsed.ElapsedMilliseconds +
                 " ms; " + faces.Count + " faces; " + distanceQueries +
-                " distance queries; " + containmentQueries + " containment queries.");
+                " distance queries; " + containmentQueries + " containment queries; " +
+                preparationMilliseconds + " ms preparation; " + searchMilliseconds + " ms search; " +
+                planarPairsRejected + " planar pairs rejected; " + partialProjectionCacheHits + " projection cache hits; " +
+                planeProjectionHits + " analytic projections; " + faceContainmentQueries + " face containment queries; " +
+                measurementCacheHits + " minimum-distance cache hits; " + partialChecksSkipped + " partial checks skipped; " +
+                faceGeometryQueries + " face geometry reads; " + adjacencyQueries + " adjacency reads; " +
+                projectionQueryCacheHits + " point projection cache hits; " + normalQueryCacheHits + " normal cache hits; " +
+                containmentQueryCacheHits + " containment cache hits; " + planeSamplesRejected + " distant plane samples skipped; " +
+                "geometry reused=" + reusedGeometry + ".");
         }
 
         private double ReadMaximumGap()
@@ -227,7 +318,6 @@ namespace NXRefine.UI
             try
             {
                 ClearPreview();
-                faces.Clear();
                 groups.Clear();
                 retained.Clear();
                 if (faceSelect != null) faceSelect.SetSelectedObjects(new TaggedObject[0]);
@@ -268,10 +358,7 @@ namespace NXRefine.UI
             {
                 double[] box = new double[6];
                 context.UF.Modl.AskBoundingBox(face.Tag, box);
-                double[] point;
-                double[] normal;
-                TryGetFacePointNormal(face, box, out point, out normal);
-                info = new FaceInfo(body, face, box, point, normal);
+                info = new FaceInfo(body, face, box);
                 return true;
             }
             catch (NXException)
@@ -280,23 +367,42 @@ namespace NXRefine.UI
             }
         }
 
-        private void BuildTopologicalAdjacency()
+        private void EnsureFaceGeometry(FaceInfo info)
         {
-            foreach (Body body in bodies.Values)
+            if (info.GeometryRead) return;
+            double[] point, normal;
+            faceGeometryQueries++;
+            TryGetFacePointNormal(info.Face, info.Box, out point, out normal);
+            info.Point = point;
+            info.Normal = normal;
+            info.GeometryRead = true;
+        }
+
+        private void EnsureAdjacency(FaceInfo info)
+        {
+            if (info.AdjacencyRead) return;
+            Tag[] adjacent;
+            try
             {
-                foreach (Edge edge in body.GetEdges())
-                {
-                    Face[] touching = edge.GetFaces()
-                        .Where(face => faces.ContainsKey(face.Tag))
-                        .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
-                    for (int i = 0; i < touching.Length; i++)
-                        for (int j = i + 1; j < touching.Length; j++)
-                        {
-                            faces[touching[i].Tag].Adjacent.Add(touching[j].Tag);
-                            faces[touching[j].Tag].Adjacent.Add(touching[i].Tag);
-                        }
-                }
+                adjacencyQueries++;
+                // The SDK specifies shared-edge adjacency, excluding faces
+                // that merely meet at a vertex. Query only participating faces.
+                context.UF.Modl.AskAdjacFaces(info.Face.Tag, out adjacent);
             }
+            catch (NXException)
+            {
+                // Retain the previous edge-based path when this native query
+                // is unsupported for an imported or unusual face.
+                adjacent = info.Face.GetEdges().SelectMany(edge => edge.GetFaces()).Select(face => face.Tag).ToArray();
+            }
+            foreach (Tag tag in adjacent ?? new Tag[0])
+            {
+                FaceInfo neighbor;
+                if (tag == info.Face.Tag || !faces.TryGetValue(tag, out neighbor) || neighbor.Body.Tag != info.Body.Tag) continue;
+                info.Adjacent.Add(tag);
+                neighbor.Adjacent.Add(info.Face.Tag);
+            }
+            info.AdjacencyRead = true;
         }
 
         private GapGroup[] FindGapGroups()
@@ -308,14 +414,16 @@ namespace NXRefine.UI
             int checks = 0;
             bool limitReached = false;
             double searchTolerance = Math.Max(activeGap, 1e-9);
+            var spatialIndex = new FaceBoxIndex(sorted.Select(info => info.Box).ToArray());
+            var nearby = new List<int>();
 
             for (int i = 0; i < sorted.Length && !limitReached; i++)
             {
                 FaceInfo first = sorted[i];
-                for (int j = i + 1; j < sorted.Length; j++)
+                spatialIndex.FindLater(i, searchTolerance, nearby);
+                foreach (int j in nearby)
                 {
                     FaceInfo second = sorted[j];
-                    if (second.Box[sweepAxis] > first.Box[sweepAxis + 3] + searchTolerance) break;
                     if (++checks > MaximumPairChecks)
                     {
                         limitReached = true;
@@ -323,19 +431,44 @@ namespace NXRefine.UI
                             " close-pair checks; use a smaller gap tolerance or select fewer bodies.");
                         break;
                     }
-                    if (first.Body.Tag == second.Body.Tag && first.Adjacent.Contains(second.Face.Tag)) continue;
-                    if (!BoxesWithin(first.Box, second.Box, searchTolerance)) continue;
-                    // Planar normals are constant over the trimmed face. This
-                    // is the same opposing-normal requirement as patch sampling.
+                    if (first.IsPlanar) EnsureFaceGeometry(first);
+                    if (second.IsPlanar) EnsureFaceGeometry(second);
+                    if ((first.IsPlanar && !GapCriteria.PlaneMayFaceBox(first.Point, first.Normal, second.Box, activeGap, gapResolution)) ||
+                        (second.IsPlanar && !GapCriteria.PlaneMayFaceBox(second.Point, second.Normal, first.Box, activeGap, gapResolution)))
+                    {
+                        planarPairsRejected++;
+                        continue;
+                    }
+                    // Planar normals are constant over the trimmed face. Reject
+                    // non-opposing normals before loading adjacency as well.
                     if (first.IsPlanar && second.IsPlanar && first.Normal != null && second.Normal != null &&
                         GapCriteria.Dot(first.Normal, second.Normal) /
                         (Length(first.Normal) * Length(second.Normal)) > -0.95) continue;
-
+                    if (first.Body.Tag == second.Body.Tag) EnsureAdjacency(first);
+                    bool adjacent = first.Body.Tag == second.Body.Tag && first.Adjacent.Contains(second.Face.Tag);
+                    if (adjacent)
+                    {
+                        // A partially open face can still share an edge with
+                        // its carrier. Its global minimum is then zero, so use
+                        // a bounded surface-grid check instead of discarding it.
+                        GapPair partialPair;
+                        if (OpposingPlanarFaces(first, second) &&
+                            TryMeasurePartialGap(first, second, out partialPair)) pairs.Add(partialPair);
+                        continue;
+                    }
                     GapPair pair;
-                    if (TryMeasureGap(first, second, out pair)) pairs.Add(pair);
+                    bool outsideRange;
+                    if (TryMeasureGap(first, second, out pair, out outsideRange)) pairs.Add(pair);
+                    else if (first.Body.Tag == second.Body.Tag && OpposingPlanarFaces(first, second))
+                    {
+                        if (outsideRange) partialChecksSkipped++;
+                        else if (TryMeasurePartialGap(first, second, out pair)) pairs.Add(pair);
+                    }
                 }
             }
 
+            context.Log("Repair Unattached Faces broad phase: " + spatialIndex.BoxTests +
+                " box tests; " + checks + " spatially close pairs.");
             if (pairs.Count == 0) return new GapGroup[0];
             var index = new Dictionary<Tag, int>();
             foreach (GapPair pair in pairs)
@@ -345,8 +478,11 @@ namespace NXRefine.UI
             }
             var union = new UnionFind(index.Count);
             foreach (Tag source in index.Keys)
+            {
+                EnsureAdjacency(faces[source]);
                 foreach (Tag adjacent in faces[source].Adjacent)
                     if (index.ContainsKey(adjacent)) union.Join(index[source], index[adjacent]);
+            }
 
             var byRoot = new Dictionary<int, List<GapPair>>();
             foreach (GapPair pair in pairs)
@@ -375,34 +511,128 @@ namespace NXRefine.UI
             return result.OrderBy(group => group.Faces.Min(face => face.Tag.ToString()), StringComparer.Ordinal).ToArray();
         }
 
-        private bool TryMeasureGap(FaceInfo first, FaceInfo second, out GapPair pair)
+        private static bool OpposingPlanarFaces(FaceInfo first, FaceInfo second)
+        {
+            if (!first.IsPlanar || !second.IsPlanar || first.Normal == null || second.Normal == null) return false;
+            double firstLength = Length(first.Normal), secondLength = Length(second.Normal);
+            return firstLength > 1e-12 && secondLength > 1e-12 &&
+                GapCriteria.Dot(first.Normal, second.Normal) / (firstLength * secondLength) <= -0.95;
+        }
+
+        private bool TryMeasurePartialGap(FaceInfo first, FaceInfo second, out GapPair pair)
         {
             pair = null;
-            double distance;
-            double accuracy;
-            double[] pointFirst = new double[3];
-            double[] pointSecond = new double[3];
-            double[] guessFirst = first.Point ?? first.Center;
-            double[] guessSecond = second.Point ?? second.Center;
+            // Sample the smaller problem-side face. A five-by-five interior
+            // grid reaches the open portion even when another edge is joined.
+            if (SmallerFace(first, second).Tag != first.Face.Tag)
+            {
+                FaceInfo swap = first; first = second; second = swap;
+            }
             try
             {
-                distanceQueries++;
-                context.UF.Modl.AskMinimumDist3(2, first.Face.Tag, second.Face.Tag, 1, guessFirst,
-                    1, guessSecond, out distance, pointFirst, pointSecond, out accuracy);
-            }
-            catch (NXException)
-            {
-                try
+                double[] normal = first.Normal;
+                double normalLength = Length(normal);
+                if (normalLength < 1e-12) return false;
+                normal = normal.Select(value => value / normalLength).ToArray();
+                double[] axis = Math.Abs(normal[0]) < 0.8 ? new[] { 1.0, 0.0, 0.0 } : new[] { 0.0, 1.0, 0.0 };
+                double[] u = Cross(normal, axis);
+                double uLength = Length(u);
+                if (uLength < 1e-12) return false;
+                u = u.Select(value => value / uLength).ToArray();
+                double[] v = Cross(normal, u);
+                double[] origin = first.Point ?? first.Center;
+                double uMin = double.MaxValue, uMax = double.MinValue;
+                double vMin = double.MaxValue, vMax = double.MinValue;
+                for (int mask = 0; mask < 8; mask++)
                 {
-                    distanceQueries++;
-                    context.UF.Modl.AskMinimumDist(first.Face.Tag, second.Face.Tag, 1, guessFirst,
-                        1, guessSecond, out distance, pointFirst, pointSecond);
-                    accuracy = 0.0;
+                    double[] corner = {
+                        first.Box[(mask & 1) == 0 ? 0 : 3],
+                        first.Box[(mask & 2) == 0 ? 1 : 4],
+                        first.Box[(mask & 4) == 0 ? 2 : 5] };
+                    double[] offset = Enumerable.Range(0, 3).Select(k => corner[k] - origin[k]).ToArray();
+                    double alongU = GapCriteria.Dot(offset, u), alongV = GapCriteria.Dot(offset, v);
+                    uMin = Math.Min(uMin, alongU); uMax = Math.Max(uMax, alongU);
+                    vMin = Math.Min(vMin, alongV); vMax = Math.Max(vMax, alongV);
                 }
-                catch (NXException) { return false; }
+                double uSpan = uMax - uMin, vSpan = vMax - vMin;
+                if (uSpan <= gapResolution || vSpan <= gapResolution) return false;
+                double projectionLimit = Math.Max(gapResolution * 20, Math.Min(uSpan, vSpan) * 0.08);
+                double minimumArea = Math.Max(gapResolution * gapResolution * 100, uSpan * vSpan * 1e-6);
+                var samples = new List<double[]>();
+                double[] firstAccepted = null, secondAccepted = null;
+                double acceptedDistance = 0.0;
+                double[] fractions = { 0.1, 0.3, 0.5, 0.7, 0.9 };
+                int sampleIndex = -1;
+                foreach (double fu in fractions)
+                    foreach (double fv in fractions)
+                    {
+                        sampleIndex++;
+                        double du = uMin + fu * uSpan, dv = vMin + fv * vSpan;
+                        double[] guess = Enumerable.Range(0, 3)
+                            .Select(k => origin[k] + du * u[k] + dv * v[k]).ToArray();
+                        double[] p, q;
+                        double measured;
+                        if (!PartialSourcePoint(first, sampleIndex, guess, projectionLimit, out p)) continue;
+                        if (samples.Any(sample => Distance(sample, p) <= gapResolution * 5)) continue;
+                        if (!SampleMayReachFace(second, p)) continue;
+                        if (!ClosestPoint(second, p, out q, out measured)) continue;
+                        if (!GapCriteria.PositiveGap(measured, activeGap, gapResolution, gapResolution * 0.1)) continue;
+                        double[] displacement = Enumerable.Range(0, 3).Select(k => q[k] - p[k]).ToArray();
+                        if (!GapCriteria.Facing(NormalAt(first, p), NormalAt(second, q), displacement)) continue;
+                        if (!EmptyGap(p, q)) continue;
+                        if (firstAccepted == null)
+                        {
+                            firstAccepted = p; secondAccepted = q; acceptedDistance = measured;
+                        }
+                        samples.Add(p);
+                        if (GapCriteria.NewSampleFormsArea(samples, minimumArea))
+                        {
+                            pair = new GapPair(first, second, acceptedDistance, firstAccepted, secondAccepted);
+                            return true;
+                        }
+                    }
+                return false;
             }
-            if (double.IsNaN(distance) || double.IsInfinity(distance) || distance < 0.0) return false;
-            if (double.IsNaN(accuracy) || double.IsInfinity(accuracy) || accuracy < 0.0) return false;
+            catch (NXException ex)
+            {
+                context.Log("Partial gap verification skipped uncertain pair: " + ex.Message);
+                return false;
+            }
+        }
+
+        private bool PartialSourcePoint(FaceInfo first, int sampleIndex, double[] guess,
+            double projectionLimit, out double[] point)
+        {
+            // The grid and projection limit depend only on this face and the
+            // part resolution, never on the paired carrier or maximum gap.
+            // FaceInfo survives tolerance edits, but is discarded after geometry
+            // or body selection changes and before any repair.
+            if (first.PartialPoints == null)
+            {
+                first.PartialPoints = new double[25][];
+                first.PartialPointChecked = new bool[25];
+            }
+            if (!first.PartialPointChecked[sampleIndex])
+            {
+                double error;
+                if (ClosestPoint(first, guess, out point, out error) && error <= projectionLimit)
+                    first.PartialPoints[sampleIndex] = point;
+                first.PartialPointChecked[sampleIndex] = true;
+            }
+            else partialProjectionCacheHits++;
+            point = first.PartialPoints[sampleIndex];
+            return point != null;
+        }
+
+        private bool TryMeasureGap(FaceInfo first, FaceInfo second, out GapPair pair, out bool outsideRange)
+        {
+            pair = null;
+            outsideRange = false;
+            GapMeasurement measurement;
+            if (!TryGetMinimum(first, second, out measurement)) return false;
+            double distance = measurement.Distance, accuracy = measurement.Accuracy;
+            double[] pointFirst = measurement.First, pointSecond = measurement.Second;
+            outsideRange = measurement.HasAccuracy && GapCriteria.MinimumExcludesGap(distance, accuracy, activeGap, gapResolution);
             if (!GapCriteria.PositiveGap(distance, activeGap, gapResolution, accuracy)) return false;
             // A minimum distance alone also accepts shared vertices, edge-only
             // proximity, thin material and intentional nearby details. Require
@@ -425,19 +655,52 @@ namespace NXRefine.UI
             return true;
         }
 
-        private static bool BoxesWithin(double[] first, double[] second, double tolerance)
+        private bool TryGetMinimum(FaceInfo first, FaceInfo second, out GapMeasurement measurement)
         {
-            double x = AxisGap(first[0], first[3], second[0], second[3]);
-            double y = AxisGap(first[1], first[4], second[1], second[4]);
-            double z = AxisGap(first[2], first[5], second[2], second[5]);
-            return x * x + y * y + z * z <= tolerance * tolerance;
-        }
-
-        private static double AxisGap(double firstMin, double firstMax, double secondMin, double secondMax)
-        {
-            if (firstMax < secondMin) return secondMin - firstMax;
-            if (secondMax < firstMin) return firstMin - secondMax;
-            return 0.0;
+            var key = new KeyValuePair<Tag, Tag>(first.Face.Tag, second.Face.Tag);
+            if (measurements.TryGetValue(key, out measurement))
+            {
+                measurementCacheHits++;
+                return true;
+            }
+            GapMeasurement reverse;
+            if (measurements.TryGetValue(new KeyValuePair<Tag, Tag>(second.Face.Tag, first.Face.Tag), out reverse))
+            {
+                measurement = new GapMeasurement(reverse.Distance, reverse.Accuracy, reverse.Second, reverse.First, reverse.HasAccuracy);
+                measurementCacheHits++;
+                return true;
+            }
+            EnsureFaceGeometry(first);
+            EnsureFaceGeometry(second);
+            double distance, accuracy;
+            bool hasAccuracy = true;
+            double[] pointFirst = new double[3];
+            double[] pointSecond = new double[3];
+            double[] guessFirst = first.Point ?? first.Center;
+            double[] guessSecond = second.Point ?? second.Center;
+            try
+            {
+                distanceQueries++;
+                context.UF.Modl.AskMinimumDist3(2, first.Face.Tag, second.Face.Tag, 1, guessFirst,
+                    1, guessSecond, out distance, pointFirst, pointSecond, out accuracy);
+            }
+            catch (NXException)
+            {
+                try
+                {
+                    distanceQueries++;
+                    context.UF.Modl.AskMinimumDist(first.Face.Tag, second.Face.Tag, 1, guessFirst,
+                        1, guessSecond, out distance, pointFirst, pointSecond);
+                    accuracy = 0.0;
+                    hasAccuracy = false;
+                }
+                catch (NXException) { return false; }
+            }
+            if (double.IsNaN(distance) || double.IsInfinity(distance) || distance < 0.0) return false;
+            if (double.IsNaN(accuracy) || double.IsInfinity(accuracy) || accuracy < 0.0) return false;
+            measurement = new GapMeasurement(distance, accuracy, pointFirst, pointSecond, hasAccuracy);
+            if (measurements.Count < MaximumCachedMeasurements) measurements.Add(key, measurement);
+            return true;
         }
 
         private bool HasGapPatch(FaceInfo first, FaceInfo second, double[] closestFirst,
@@ -472,8 +735,9 @@ namespace NXRefine.UI
                                 .Select(k => anchor[k] + step * (i * u[k] + j * v[k])).ToArray();
                             double[] p, q;
                             double projectionError, measured;
-                            if (!ClosestPoint(first.Face, guess, out p, out projectionError) || projectionError > step * 0.25) continue;
-                            if (!ClosestPoint(second.Face, p, out q, out measured)) continue;
+                            if (!ClosestPoint(first, guess, out p, out projectionError) || projectionError > step * 0.25) continue;
+                            if (!SampleMayReachFace(second, p)) continue;
+                            if (!ClosestPoint(second, p, out q, out measured)) continue;
                             if (!GapCriteria.PositiveGap(measured, activeGap, gapResolution, gapResolution * 0.1)) continue;
                             double[] displacement = Enumerable.Range(0, 3).Select(k => q[k] - p[k]).ToArray();
                             if (!GapCriteria.Facing(NormalAt(first, p), NormalAt(second, q), displacement)) continue;
@@ -491,25 +755,82 @@ namespace NXRefine.UI
             }
         }
 
-        private bool ClosestPoint(Face face, double[] reference, out double[] point, out double distance)
+        private bool SampleMayReachFace(FaceInfo info, double[] point)
         {
+            if (!info.IsPlanar || GapCriteria.PointMayReachPlane(point, info.Point, info.Normal, activeGap, gapResolution)) return true;
+            planeSamplesRejected++;
+            return false;
+        }
+
+        private void ClearPointQueries()
+        {
+            projections.Clear();
+            normals.Clear();
+            containment.Clear();
+        }
+
+        private bool ClosestPoint(FaceInfo info, double[] reference, out double[] point, out double distance)
+        {
+            PointProjection cached;
+            if (projections.TryGet(info.Face.Tag, reference, out cached))
+            {
+                projectionQueryCacheHits++;
+                point = cached.Point;
+                distance = cached.Distance;
+                return true;
+            }
+            if (!ComputeClosestPoint(info, reference, out point, out distance)) return false;
+            // Do not retain failed/uncertain kernel queries. Lookup keys copy
+            // coordinates, and cached outputs remain internal/read-only.
+            projections.Store(info.Face.Tag, reference, new PointProjection(point, distance));
+            return true;
+        }
+
+        private bool ComputeClosestPoint(FaceInfo info, double[] reference, out double[] point, out double distance)
+        {
+            if (info.IsPlanar && !info.PlanarContainmentUnavailable &&
+                GapCriteria.TryProjectToPlane(reference, info.Point, info.Normal, gapResolution, out point, out distance))
+            {
+                try
+                {
+                    int status;
+                    faceContainmentQueries++;
+                    context.UF.Modl.AskPointContainment(point, info.Face.Tag, out status);
+                    // UF_MODL_ask_point_containment accepts a face tag. Only a
+                    // strictly interior projection is an analytic minimum on
+                    // the trimmed face. Boundary, hole and exterior points
+                    // retain the original NX minimum-distance path.
+                    if (status == 1) { planeProjectionHits++; return true; }
+                }
+                catch (NXException) { info.PlanarContainmentUnavailable = true; }
+            }
             point = new double[3];
             double accuracy;
             distanceQueries++;
-            context.UF.Modl.AskMinimumDist3(2, Tag.Null, face.Tag, 1, reference, 0, new double[3],
+            context.UF.Modl.AskMinimumDist3(2, Tag.Null, info.Face.Tag, 1, reference, 0, new double[3],
                 out distance, new double[3], point, out accuracy);
-            return !double.IsNaN(distance) && !double.IsInfinity(distance) &&
-                !double.IsNaN(accuracy) && accuracy >= 0 && accuracy <= gapResolution * 0.1;
+            return !double.IsNaN(distance) && !double.IsInfinity(distance) && distance >= 0 &&
+                !double.IsNaN(accuracy) && accuracy >= 0 && accuracy <= gapResolution * 0.1 &&
+                point.All(value => !double.IsNaN(value) && !double.IsInfinity(value));
         }
 
         private double[] NormalAt(FaceInfo info, double[] reference)
         {
             if (info.IsPlanar && info.Normal != null) return info.Normal;
+            double[] cached;
+            if (normals.TryGet(info.Face.Tag, reference, out cached))
+            {
+                normalQueryCacheHits++;
+                return cached;
+            }
             Face face = info.Face;
             double[] uv = new double[2], point = new double[3], normal = new double[3];
             context.UF.Modl.AskFaceParm(face.Tag, reference, uv, point);
             context.UF.Modl.AskFaceProps(face.Tag, uv, point, new double[3], new double[3],
                 new double[3], new double[3], normal, new double[2]);
+            double length = Length(normal);
+            if (!double.IsNaN(length) && !double.IsInfinity(length) && length >= 1e-12)
+                normals.Store(face.Tag, reference, normal);
             return normal;
         }
 
@@ -521,8 +842,13 @@ namespace NXRefine.UI
                 foreach (Body body in bodies.Values)
                 {
                     int status;
-                    containmentQueries++;
-                    context.UF.Modl.AskPointContainment(point, body.Tag, out status);
+                    if (containment.TryGet(body.Tag, point, out status)) containmentQueryCacheHits++;
+                    else
+                    {
+                        containmentQueries++;
+                        context.UF.Modl.AskPointContainment(point, body.Tag, out status);
+                        if (status >= 1 && status <= 3) containment.Store(body.Tag, point, status);
+                    }
                     if (status != 2) return false; // Inside or on material is not an open gap.
                 }
             }
@@ -537,6 +863,12 @@ namespace NXRefine.UI
         private static double Length(double[] vector)
         {
             return Math.Sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
+        }
+
+        private static double Distance(double[] first, double[] second)
+        {
+            double x = first[0] - second[0], y = first[1] - second[1], z = first[2] - second[2];
+            return Math.Sqrt(x*x + y*y + z*z);
         }
 
         private bool TryGetFacePointNormal(Face face, double[] box, out double[] point, out double[] normal)
@@ -588,7 +920,7 @@ namespace NXRefine.UI
 
         private bool CanApply()
         {
-            if (!ready || updating || gapEditPending || !previewValid || gapTimer.Enabled || retained.Count == 0) return false;
+            if (!ready || updating || !scanCurrent || gapEditPending || !previewValid || gapTimer.Enabled || retained.Count == 0) return false;
             try { return ReadMaximumGap() == activeGap; }
             catch (InvalidOperationException) { return false; }
         }
@@ -677,7 +1009,7 @@ namespace NXRefine.UI
 
         private void Reset()
         {
-            scanCurrent = false;
+            InvalidateGeometry();
             gapTimer.Stop();
             previewTimer.Stop();
             previewValid = false;
@@ -690,6 +1022,8 @@ namespace NXRefine.UI
                 ClearPreview();
                 bodies.Clear();
                 faces.Clear();
+                measurements.Clear();
+                ClearPointQueries();
                 groups.Clear();
                 retained.Clear();
             }
@@ -717,6 +1051,11 @@ namespace NXRefine.UI
                 }
                 catch (Exception ex) { return Error(ex); }
                 return 1;
+            }
+            if (!scanCurrent)
+            {
+                Update(maxGap);
+                return 1; // Review rebuilt candidates after an external edit.
             }
             if (!previewValid || gapTimer.Enabled || retained.Count == 0) return 1;
             try
@@ -843,7 +1182,7 @@ namespace NXRefine.UI
 
         private int Error(Exception ex)
         {
-            scanCurrent = false;
+            InvalidateGeometry();
             gapTimer.Stop();
             previewTimer.Stop();
             previewValid = false;
@@ -872,13 +1211,16 @@ namespace NXRefine.UI
 
         private sealed class FaceInfo
         {
-            public FaceInfo(Body body, Face face, double[] box, double[] point, double[] normal)
+            public double[][] PartialPoints;
+            public bool[] PartialPointChecked;
+            public bool GeometryRead;
+            public bool AdjacencyRead;
+            public bool PlanarContainmentUnavailable;
+            public FaceInfo(Body body, Face face, double[] box)
             {
                 Body = body;
                 Face = face;
                 Box = box;
-                Point = point;
-                Normal = normal;
                 IsPlanar = face.SolidFaceType == Face.FaceType.Planar;
                 Center = new[] { (box[0] + box[3]) * 0.5, (box[1] + box[4]) * 0.5, (box[2] + box[5]) * 0.5 };
                 Adjacent = new HashSet<Tag>();
@@ -887,11 +1229,44 @@ namespace NXRefine.UI
             public Body Body { get; private set; }
             public Face Face { get; private set; }
             public double[] Box { get; private set; }
-            public double[] Point { get; private set; }
-            public double[] Normal { get; private set; }
+            public double[] Point { get; set; }
+            public double[] Normal { get; set; }
             public bool IsPlanar { get; private set; }
             public double[] Center { get; private set; }
             public HashSet<Tag> Adjacent { get; private set; }
+        }
+
+        private sealed class PointProjection
+        {
+            public readonly double[] Point;
+            public readonly double Distance;
+            public PointProjection(double[] point, double distance) { Point = point; Distance = distance; }
+        }
+
+        private sealed class GapMeasurement
+        {
+            public readonly double Distance, Accuracy;
+            public readonly double[] First, Second;
+            public readonly bool HasAccuracy;
+            public GapMeasurement(double distance, double accuracy, double[] first, double[] second, bool hasAccuracy)
+            {
+                Distance = distance; Accuracy = accuracy; First = first; Second = second; HasAccuracy = hasAccuracy;
+            }
+        }
+
+        private sealed class FacePairComparer : IEqualityComparer<KeyValuePair<Tag, Tag>>
+        {
+            public bool Equals(KeyValuePair<Tag, Tag> a, KeyValuePair<Tag, Tag> b)
+            {
+                return a.Key == b.Key && a.Value == b.Value;
+            }
+
+            public int GetHashCode(KeyValuePair<Tag, Tag> pair)
+            {
+                // ValueType's default hash may use just the first tag, causing
+                // long collision chains for many faces paired with one carrier.
+                unchecked { return pair.Key.GetHashCode() * 397 ^ pair.Value.GetHashCode(); }
+            }
         }
 
         private sealed class GapPair

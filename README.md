@@ -8,8 +8,7 @@ NX Refine is an open-source Siemens NX add-on for geometry validation, defeaturi
 
 | Group | Command | Current behavior |
 |---|---|---|
-| Inspect | Analyze | Runs NX Examine Geometry checks, detects short edges, small faces, small blends, and cylindrical hole candidates, then highlights findings. |
-| Simplify | Remove Blends | Recognizes blend faces and removes those with radius at or below the configured threshold. |
+| Simplify | Remove Blends | Filters seed faces by radius, expands native connected fillets, and retries native recognition options to delete healable chains. |
 | Simplify | Fill Holes | Opens a native preview dialog for one or more target entities, automatic inner-hole seeds expanded by NX's Boss and Pocket Faces rule, a maximum hole radius, and a reviewable candidate-face collector. |
 | Simplify | Clear Cavities | Opens a native preview dialog for one or more solid bodies, detects face shells that are fully enclosed and disconnected from the outside, and lets you review or exclude cavity groups before healing them. |
 | Repair | Repair Unattached Faces | Opens a native preview dialog for one or more solid bodies, finds non-adjacent faces whose minimum separation is within the selected gap tolerance, and repairs retained gaps with native Sew or Delete Face/Heal operations. |
@@ -85,14 +84,27 @@ deploy/
 ## Usage
 
 1. Open a part and save a disposable copy.
-2. Choose **Geometry Cleanup > Analyze**.
-3. Review highlighted entities and the NX Listing Window summary.
-4. Adjust thresholds in **Settings**.
-5. Run one focused repair at a time and inspect the result.
-6. Run **Analyze** again before exporting to a simulation system.
+2. Choose one focused repair from **Geometry Cleanup**.
+3. Review highlighted candidates before applying the change.
+4. Adjust thresholds in the command's native dialog or in **Settings** where applicable.
+5. Inspect and validate the result before exporting to a simulation system.
 
 Area and other cleanup thresholds use the current part unit. Remove Markings **Max feature height** is the exception: it is always entered in millimetres, including for inch parts.
-Candidate faces are highlighted during repair preview. Closing a confirmation dialog clears the preview before deletion starts. Repair completion counts are written silently to the NX system log; repair completion and cancellation do not open the Listing Window. The Analyze command still opens its requested analysis report.
+Candidate faces are highlighted during repair preview. Repair completion counts are written silently to the NX system log; repair completion and cancellation do not open the Listing Window.
+
+### Remove Blends workflow
+
+Remove Blends uses an NX native Block Styler dialog with OK / Apply / Cancel navigation.
+
+1. Select one or more solid bodies in **Target entities**.
+2. Enter **Minimum seed radius** and **Maximum seed radius** in part units. Radius is a weak control: it filters only the initial seed faces. Native Connected Blend Faces expansion may include faces outside these limits, and those faces may be deleted too. Values are saved in `%APPDATA%\NXRefine\settings.ini`.
+3. Radius edits remain provisional until committed; invalid input disables Apply / OK. Changing the range rebuilds the expanded preview.
+4. Review **Connected blend faces**. The preview contains full native rule results, including expansion beyond the seed radius. Manually deselected faces are protected: a rule containing one is skipped as a whole, rather than clipped.
+5. **Apply** or **OK** uses live NX **Connected Blend Faces** rules directly in **Delete Face with Heal**. Expanded recognition is preferred; other native recognition combinations are tried when progress stops. Rules are re-evaluated on current topology. No fixed face lists or arbitrary chain splitting are used.
+6. Each native operation commits or rolls back independently. Complete selected-chain removal, solid preservation and absence of additional NX body-consistency errors are checked. The conservative whole-region rollback and local shape veto were reverted at the user's request; these checks do not guarantee every visual shape detail.
+7. Processing is bounded by 256 commit attempts or 120 seconds, checked between operations. Successful chains remain under one visible NX undo mark. There is no per-region budget allocation. See [native retries](docs/NATIVE_BLEND_RETRIES.md).
+
+Keep `deploy/application/NXRefine.RemoveBlends.dlx` beside `NXRefine.dll`; this is the native dialog layout required at runtime.
 
 ### Remove Markings workflow
 
@@ -133,11 +145,11 @@ This is a topology-based enclosed-shell detector, not a semantic recognition sys
 
 Repair Unattached Faces uses an NX native Block Styler dialog with OK / Apply / Cancel navigation.
 
-1. Select one or more solid bodies in **Target entities**. The command excludes shared edges and zero-distance contacts. It requires a positive separation below **Maximum gap (part units)**, opposing outward normals, multiple non-collinear samples, and sampled empty space between the faces. The initial value follows **Settings > Sew tolerance**. Uncertain measurements are skipped; this conservative sampling is not a proof that every gap will be found. While editing any numeric field, NX keeps the text provisional; press **Enter**, leave the field, or use an action button to commit it before a scan starts.
+1. Select one or more solid bodies in **Target entities**. The command requires a positive local separation within **Maximum gap (part units)**, opposing outward normals, multiple non-collinear samples, and sampled empty space between the faces. Fully joined and zero-distance-only contacts are excluded; opposing planar faces can still qualify through an open local patch when another portion is attached. The initial value is `0.01`, and subsequent uses remember the last gap value. Uncertain measurements are skipped; this conservative sampling is not a proof that every gap will be found. While editing any numeric field, NX keeps the text provisional; press **Enter**, leave the field, or use an action button to commit it before a scan starts.
 2. Review the **Unattached faces to repair** collector. Only the smaller problem-side faces are highlighted. Connected problem-side faces form groups; a shared large support face does not merge independent gaps. Deselecting any candidate face removes its complete group from the pending repair. Deliberate small clearances can still qualify and must be excluded manually.
 3. **Apply** repairs retained groups and leaves the dialog open; **OK** repairs and closes. **Cancel** or Escape clears the preview. Separate solid bodies use NX's native solid Sew operation. Gaps between faces in the same body use native Delete Face with Heal on the smaller face, allowing surrounding faces to close the gap. Each pass is protected by one NX undo mark.
 
-This is a geometric proximity detector, not an intent recognizer. Deliberate clearances, thin walls, and nearby faces from different design features can qualify and must be reviewed before Apply/OK. Very large selections or tolerances may require a narrower scope; the scan logs a warning if its close-pair safety limit is reached. A failed repair pass is rolled back.
+This is a geometric proximity detector, not an intent recognizer. Deliberate clearances, thin walls, and nearby faces from different design features can qualify and must be reviewed before Apply/OK. Scans use a three-dimensional box index, planar prefilters, interior planar projections and cached source projections to reduce repeated geometry queries. Adjusting the gap reuses unchanged face geometry and bounded distance measurements; body selection changes and part edits invalidate this cache. Candidates and empty-space checks are recalculated for the new tolerance. Very large selections or tolerances may require a narrower scope; the scan logs a warning if its spatially close-pair safety limit is reached. Preparation/search timings and query/cache counters are logged for performance comparison. A failed repair pass is rolled back.
 
 ## Known limitations
 

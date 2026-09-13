@@ -189,7 +189,9 @@ namespace NXRefine.Repair
                         if (type == DeleteFaceBuilder.SelectTypes.Blend)
                             builder.MaxBlendRadius.RightHandSide = settings.MaxBlendRadius.ToString(System.Globalization.CultureInfo.InvariantCulture);
                         FaceDumbRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(group);
-                        builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
+                        ScCollector collector = type == DeleteFaceBuilder.SelectTypes.Blend
+                            ? builder.BlendCollector : builder.FaceCollector;
+                        collector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
                         builder.CommitFeature();
                         processed += group.Length;
                     }
