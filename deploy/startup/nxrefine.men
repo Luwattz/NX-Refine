@@ -7,55 +7,55 @@ MENU NX_REFINE_MENU
 BUTTON NX_REFINE_REMOVE_BLENDS
 LABEL Remove Blends
 MESSAGE Select solid bodies, filter blends by minimum and maximum radius, review faces, and remove what can be healed.
-BITMAP nxrefine_remove_blends.bmp
+BITMAP nxrefine_remove_blends
 ACTIONS NXRefine.RemoveBlends.dll
 
 BUTTON NX_REFINE_FILL_HOLES
 LABEL Fill Holes
 MESSAGE Select bodies to detect inner holes, set a maximum radius, and review the expanded hole faces.
-BITMAP nxrefine_fill_holes.bmp
+BITMAP nxrefine_fill_holes
 ACTIONS NXRefine.FillHoles.dll
 
 BUTTON NX_REFINE_CLEAR_CAVITIES
 LABEL Clear Cavities
 MESSAGE Select solid bodies to find fully enclosed internal cavities, review the highlighted cavity faces, and apply cleanup.
-BITMAP nxrefine_clear_cavities.bmp
+BITMAP nxrefine_clear_cavities
 ACTIONS NXRefine.ClearCavities.dll
 
 BUTTON NX_REFINE_REPAIR_UNATTACHED
 LABEL Repair Unattached Faces
 MESSAGE Select solid bodies to find small gaps between faces, review the highlighted pairs, and repair selected gaps.
-BITMAP nxrefine_repair_unattached.bmp
+BITMAP nxrefine_repair_unattached
 ACTIONS NXRefine.RepairUnattached.dll
 
 BUTTON NX_REFINE_REMOVE_MARKINGS
 LABEL Remove Markings
 MESSAGE Select multiple carrier faces and review their connected marking candidates.
-BITMAP nxrefine_remove_markings.bmp
+BITMAP nxrefine_remove_markings
 ACTIONS NXRefine.RemoveMarkings.dll
 
 BUTTON NX_REFINE_REPAIR_SHEETS
 LABEL Repair Sheets
 MESSAGE Sew sheet bodies using the configured tolerance.
-BITMAP nxrefine_repair_sheets.bmp
+BITMAP nxrefine_repair_sheets
 ACTIONS NXRefine.RepairSheets.dll
 
 BUTTON NX_REFINE_PATCH_OPENINGS
 LABEL Patch Openings
 MESSAGE Detect and highlight open sheet boundaries.
-BITMAP nxrefine_patch_openings.bmp
+BITMAP nxrefine_patch_openings
 ACTIONS NXRefine.PatchOpenings.dll
 
 BUTTON NX_REFINE_SETTINGS
 LABEL Settings
 MESSAGE Configure cleanup thresholds and tolerances.
-BITMAP nxrefine_settings.bmp
+BITMAP nxrefine_settings
 ACTIONS NXRefine.Settings.dll
 
 BUTTON NX_REFINE_ABOUT
 LABEL About
 MESSAGE Show NX Refine version and safety information.
-BITMAP nxrefine_about.bmp
+BITMAP nxrefine_about
 ACTIONS NXRefine.About.dll
 
 END_OF_MENU

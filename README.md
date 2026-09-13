@@ -77,7 +77,7 @@ deploy/
 ├── application/
 │   ├── NXRefine.dll
 │   ├── NXRefine.*.dll
-│   └── nxrefine_*.bmp (plus .sc/.lc/.2s/.2l size variants)
+│   └── nxrefine_*.{sc,lc,2s,2l,8s}.bmp
 └── startup/
     ├── nxrefine.men
     └── nxrefine_main.rtb
