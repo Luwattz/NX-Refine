@@ -65,9 +65,10 @@ See [Installing on Siemens NX 2312](docs/INSTALL_NX2312.md) for the complete bui
    .\scripts\install-local.ps1 -CustomDirectoryFile "C:\NXCustom\custom_dirs.dat"
    ```
 
-4. Set `UGII_CUSTOM_DIRECTORY_FILE` to that file if your NX environment does not already define it.
-5. Restart NX and enter the Modeling application.
-6. If the tab is hidden by the active role, right-click the ribbon and enable **Geometry Cleanup**.
+4. The custom BMP icons are stored directly in `deploy\application` beside the DLLs so NX can resolve them from the custom application root. No separate bitmap path is required; the included `.cmd` updater also registers this application directory in the current user's `UGII_BITMAP_PATH` as a fallback.
+5. Set `UGII_CUSTOM_DIRECTORY_FILE` to that file if your NX environment does not already define it.
+6. Restart NX and enter the Modeling application.
+7. If the tab is hidden by the active role, right-click the ribbon and enable **Geometry Cleanup**.
 
 The deployment layout follows the standard NX custom application convention:
 
@@ -75,7 +76,8 @@ The deployment layout follows the standard NX custom application convention:
 deploy/
 ├── application/
 │   ├── NXRefine.dll
-│   └── NXRefine.*.dll
+│   ├── NXRefine.*.dll
+│   └── nxrefine_*.bmp (plus .sc/.lc/.2s/.2l size variants)
 └── startup/
     ├── nxrefine.men
     └── nxrefine_main.rtb

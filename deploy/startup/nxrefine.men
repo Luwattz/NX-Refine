@@ -7,55 +7,55 @@ MENU NX_REFINE_MENU
 BUTTON NX_REFINE_REMOVE_BLENDS
 LABEL Remove Blends
 MESSAGE Select solid bodies, filter blends by minimum and maximum radius, review faces, and remove what can be healed.
-BITMAP edge_blend
+BITMAP nxrefine_remove_blends.bmp
 ACTIONS NXRefine.RemoveBlends.dll
 
 BUTTON NX_REFINE_FILL_HOLES
 LABEL Fill Holes
 MESSAGE Select bodies to detect inner holes, set a maximum radius, and review the expanded hole faces.
-BITMAP hole
+BITMAP nxrefine_fill_holes.bmp
 ACTIONS NXRefine.FillHoles.dll
 
 BUTTON NX_REFINE_CLEAR_CAVITIES
 LABEL Clear Cavities
 MESSAGE Select solid bodies to find fully enclosed internal cavities, review the highlighted cavity faces, and apply cleanup.
-BITMAP hole
+BITMAP nxrefine_clear_cavities.bmp
 ACTIONS NXRefine.ClearCavities.dll
 
 BUTTON NX_REFINE_REPAIR_UNATTACHED
 LABEL Repair Unattached Faces
 MESSAGE Select solid bodies to find small gaps between faces, review the highlighted pairs, and repair selected gaps.
-BITMAP sew
+BITMAP nxrefine_repair_unattached.bmp
 ACTIONS NXRefine.RepairUnattached.dll
 
 BUTTON NX_REFINE_REMOVE_MARKINGS
 LABEL Remove Markings
 MESSAGE Select multiple carrier faces and review their connected marking candidates.
-BITMAP text
+BITMAP nxrefine_remove_markings.bmp
 ACTIONS NXRefine.RemoveMarkings.dll
 
 BUTTON NX_REFINE_REPAIR_SHEETS
 LABEL Repair Sheets
 MESSAGE Sew sheet bodies using the configured tolerance.
-BITMAP sew
+BITMAP nxrefine_repair_sheets.bmp
 ACTIONS NXRefine.RepairSheets.dll
 
 BUTTON NX_REFINE_PATCH_OPENINGS
 LABEL Patch Openings
 MESSAGE Detect and highlight open sheet boundaries.
-BITMAP bounded_plane
+BITMAP nxrefine_patch_openings.bmp
 ACTIONS NXRefine.PatchOpenings.dll
 
 BUTTON NX_REFINE_SETTINGS
 LABEL Settings
 MESSAGE Configure cleanup thresholds and tolerances.
-BITMAP preferences
+BITMAP nxrefine_settings.bmp
 ACTIONS NXRefine.Settings.dll
 
 BUTTON NX_REFINE_ABOUT
 LABEL About
 MESSAGE Show NX Refine version and safety information.
-BITMAP info
+BITMAP nxrefine_about.bmp
 ACTIONS NXRefine.About.dll
 
 END_OF_MENU

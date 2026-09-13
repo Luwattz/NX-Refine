@@ -28,6 +28,8 @@ The helper script performs the append operation without duplicating the entry:
 
 If the environment variable is not already configured, set the user-level `UGII_CUSTOM_DIRECTORY_FILE` variable to the absolute path of that file. Sign out and back in, or start NX from a new process, after changing an environment variable.
 
+The custom button bitmaps are stored directly in `deploy\application`, beside the DLLs. NX can resolve them from the custom application root. Each icon includes 16/24/32/48/64-pixel BMP variants using the `.sc`, `.lc`, `.2s`, base, and `.2l` suffixes. The update workflows also register this application directory in the current user's `UGII_BITMAP_PATH` as a fallback; preserve any existing bitmap path entries.
+
 ## Verify
 
 1. Restart NX.

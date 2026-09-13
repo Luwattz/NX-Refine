@@ -10,6 +10,7 @@ if not "%UGII_CUSTOM_DIRECTORY_FILE%"=="" set "CUSTOM_DIRECTORY_FILE=%UGII_CUSTO
 set "REPO_ROOT=%~dp0.."
 for %%I in ("%REPO_ROOT%") do set "REPO_ROOT=%%~fI"
 set "MSBUILD=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe"
+set "BITMAP_DIRECTORY=%REPO_ROOT%\deploy\application"
 
 if not exist "%MSBUILD%" (
   echo ERROR: MSBuild was not found:
@@ -43,9 +44,19 @@ if not exist "%CUSTOM_DIRECTORY_FILE%" (
 findstr /x /c:"%REPO_ROOT%\deploy" "%CUSTOM_DIRECTORY_FILE%" >nul 2>nul
 if errorlevel 1 echo %REPO_ROOT%\deploy>>"%CUSTOM_DIRECTORY_FILE%"
 
+rem Register the custom bitmap directory for the current Windows user.
+set "NEW_BITMAP_PATH=%BITMAP_DIRECTORY%"
+if not "%UGII_BITMAP_PATH%"=="" (
+  echo ;%UGII_BITMAP_PATH%; | findstr /i /c:";%BITMAP_DIRECTORY%;" >nul
+  if errorlevel 1 (set "NEW_BITMAP_PATH=%BITMAP_DIRECTORY%;%UGII_BITMAP_PATH%") else (set "NEW_BITMAP_PATH=%UGII_BITMAP_PATH%")
+)
+setx UGII_BITMAP_PATH "%NEW_BITMAP_PATH%" >nul
+if errorlevel 1 echo WARNING: Could not persist UGII_BITMAP_PATH. Set it manually before starting NX.
+
 echo.
 echo Update complete.
 echo Custom directory file: %CUSTOM_DIRECTORY_FILE%
 echo Registered deploy path: %REPO_ROOT%\deploy
+echo Registered bitmap path: %BITMAP_DIRECTORY%
 echo Restart NX 2512 to load the new version.
 exit /b 0
