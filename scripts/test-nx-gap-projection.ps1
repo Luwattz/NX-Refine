@@ -1,5 +1,5 @@
 param(
-    [string]$NXInstallDir = "C:\Program Files\Siemens\NX2312",
+    [string]$NXInstallDir = "C:\Program Files\Siemens\DesigncenterNX2512",
     [switch]$CompileOnly
 )
 $ErrorActionPreference = "Stop"

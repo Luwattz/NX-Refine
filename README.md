@@ -2,7 +2,7 @@
 
 NX Refine is an open-source Siemens NX add-on for geometry validation, defeaturing, and simulation-oriented model cleanup. It adds a dedicated **Geometry Cleanup** ribbon tab to NX and wraps native NXOpen and UFUN operations in a preview-first workflow.
 
-> Status: early functional prototype targeting Siemens NX 2312 on Windows. Always work on a copy of production geometry and validate repaired bodies before downstream use.
+> Status: early functional prototype targeting Siemens NX 2512 on Windows. Always work on a copy of production geometry and validate repaired bodies before downstream use.
 
 ## Ribbon commands
 
@@ -34,28 +34,30 @@ Additional configurable heuristics identify small-area faces, short edges, blend
 ## Requirements
 
 - Windows x64
-- Siemens NX 2312 for the supplied build defaults
+- Siemens NX 2512 for the supplied build defaults
 - NXOpen .NET assemblies from the target NX installation
 - .NET Framework 4.x build tools or Visual Studio 2022
 - Appropriate Siemens NX licenses for the modeling commands used
 
-Other recent NX releases can be targeted by passing their installation directory during the build. NXOpen binary compatibility is release-dependent; build the DLL against the deployment release.
+The default installation directory is `C:\Program Files\Siemens\DesigncenterNX2512`. Pass `-NXInstallDir` if NX 2512 is installed elsewhere. NXOpen binary compatibility is release-dependent; build the DLL against the deployment release.
 
 ## Build
 
 Open PowerShell in the repository and run:
 
 ```powershell
-.\scripts\build.ps1 -Configuration Release -NXInstallDir "C:\Program Files\Siemens\NX2312"
+.\scripts\build.ps1 -Configuration Release -NXInstallDir "C:\Program Files\Siemens\DesigncenterNX2512"
 ```
 
 The build copies `NXRefine.dll` to `deploy\application`.
+
+On a computer where `.ps1` files are blocked, run `scripts\update-nxrefine-nx2512.cmd` from Command Prompt. It builds and registers NX Refine for the current user without administrator rights; edit its `NX_INSTALL_DIR` if NX 2512 is installed elsewhere.
 
 ## Install the ribbon
 
 NX loads custom applications from directories listed in the file referenced by `UGII_CUSTOM_DIRECTORY_FILE`.
 
-See [Installing on Siemens NX 2312](docs/INSTALL_NX2312.md) for the complete build, registration, verification, and uninstall procedure.
+See [Installing on Siemens NX 2512](docs/INSTALL_NX2512.md) for the complete build, registration, verification, and uninstall procedure.
 
 1. Build the project.
 2. Add the absolute `deploy` directory to your NX custom directory file, one directory per line. `deploy\custom_dirs.dat.example` shows the expected format.

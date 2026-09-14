@@ -1,9 +1,9 @@
-# Installing on Siemens NX 2312
+# Installing on Siemens NX 2512
 
 ## Prerequisites
 
-- Siemens NX 2312 is installed.
-- The project has been built against the local NX 2312 managed assemblies.
+- Siemens NX 2512 is installed.
+- The project has been built against the local NX 2512 managed assemblies.
 - NX is closed while the startup configuration is changed.
 
 ## Build
@@ -11,10 +11,12 @@
 Run PowerShell from the repository root:
 
 ```powershell
-.\scripts\build.ps1 -Configuration Release -NXInstallDir "C:\Program Files\Siemens\NX2312"
+.\scripts\build.ps1 -Configuration Release -NXInstallDir "C:\Program Files\Siemens\DesigncenterNX2512"
 ```
 
 The build creates the core library and one lightweight command-entry library for each ribbon button under `deploy\application`.
+
+If PowerShell scripts are blocked, run `scripts\update-nxrefine-nx2512.cmd` from Command Prompt instead. It builds the project and registers the `deploy` and bitmap paths for the current user without administrator rights. Edit `NX_INSTALL_DIR` and `CUSTOM_DIRECTORY_FILE` at the top of that file when needed. The registration steps below describe the equivalent manual setup.
 
 ## Register the custom application
 

@@ -1,6 +1,6 @@
 # Fill Holes regression checklist
 
-Run in NX 2312 on disposable parts; these are runtime acceptance checks,
+Run in NX 2512 on disposable parts; these are runtime acceptance checks,
 not results inferred from a successful build.
 
 1. Confirm exactly three controls: target bodies, maximum radius, and one

@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)][string]$PartPath,
-    [string]$NXInstallDir = "C:\Program Files\Siemens\NX2312",
+    [string]$NXInstallDir = "C:\Program Files\Siemens\DesigncenterNX2512",
     [int]$MinimumRemoved = 1,
     [ValidateRange(1, 5)][int]$RepeatCount = 1,
     [ValidateRange(0, 1000000)][int]$MinimumSecondRoundRemoved = 0,

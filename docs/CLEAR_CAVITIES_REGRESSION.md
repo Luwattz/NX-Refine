@@ -1,6 +1,6 @@
 # Clear Cavities regression checklist
 
-These checks require Siemens NX 2312 and should be run on disposable copies of the sample parts.
+These checks require Siemens NX 2512 and should be run on disposable copies of the sample parts.
 
 ## Dialog and selection
 

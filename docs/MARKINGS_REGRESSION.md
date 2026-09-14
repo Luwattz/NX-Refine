@@ -1,6 +1,6 @@
 # Remove Markings regression checks
 
-Run these checks in NX 2312 on a disposable part containing a planar carrier,
+Run these checks in NX 2512 on a disposable part containing a planar carrier,
 disconnected lettering at several heights, and taller bosses. This is a manual
 integration checklist: compilation alone cannot verify native selection repaint.
 

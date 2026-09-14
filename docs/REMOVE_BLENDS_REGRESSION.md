@@ -20,7 +20,7 @@ Expanded loop recognition and flags are documented in [EXPANDED_BLEND_RECOGNITIO
 
 ```powershell
 ./scripts/test-nx-remove-blends.ps1 -PartPath ./artifacts/blend-bench/model_baseline.prt -MinimumRemoved 350 -RepeatCount 3 -MinimumSecondRoundRemoved 1
-& 'C:\Program Files\Siemens\NX2312\NXBIN\run_journal.exe' "$pwd\tests\RunNxBlendCollectorRegression.cs" -args "$pwd\bin\Release\NXRefine.dll"
+& 'C:\Program Files\Siemens\DesigncenterNX2512\NXBIN\run_journal.exe' "$pwd\tests\RunNxBlendCollectorRegression.cs" -args "$pwd\bin\Release\NXRefine.dll"
 ```
 
 The local baseline is an ignored fixture. Use `-CompileOnly` to compile without running NX. Failure/skip logs distinguish kernel deletion failure, post-check rollback, manual exclusion and budget limits. The previous 195/410-face results use different policies and are historical, not current acceptance targets.

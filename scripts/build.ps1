@@ -1,13 +1,13 @@
 param(
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
-    [string]$NXInstallDir = $env:UGII_BASE_DIR
+    [string]$NXInstallDir = "C:\Program Files\Siemens\DesigncenterNX2512"
 )
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-if ([string]::IsNullOrWhiteSpace($NXInstallDir)) {
-    $NXInstallDir = "C:\Program Files\Siemens\NX2312"
+if (-not (Test-Path -LiteralPath (Join-Path $NXInstallDir "NXBIN\managed\NXOpen.dll"))) {
+    throw "NXOpen.dll was not found under $NXInstallDir. Pass -NXInstallDir with the NX 2512 installation directory."
 }
 $msbuild = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe"
 if (-not (Test-Path -LiteralPath $msbuild)) {

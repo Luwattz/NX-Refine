@@ -3,7 +3,7 @@ setlocal EnableExtensions
 
 rem NX Refine update script for computers where PowerShell scripts are blocked.
 rem Edit these two paths if your NX or custom directory file is elsewhere.
-set "NX_INSTALL_DIR=C:\Program Files\Siemens\NX2512"
+set "NX_INSTALL_DIR=C:\Program Files\Siemens\DesigncenterNX2512"
 set "CUSTOM_DIRECTORY_FILE=%USERPROFILE%\Documents\NXCustom\custom_dirs.dat"
 if not "%UGII_CUSTOM_DIRECTORY_FILE%"=="" set "CUSTOM_DIRECTORY_FILE=%UGII_CUSTOM_DIRECTORY_FILE%"
 
