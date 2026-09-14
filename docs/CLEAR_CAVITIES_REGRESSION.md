@@ -4,7 +4,7 @@ These checks require Siemens NX 2512 and should be run on disposable copies of t
 
 ## Dialog and selection
 
-- [ ] Geometry Cleanup contains **Clear Cavities** in the Simplify group and the command opens the native Block Styler dialog.
+- [ ] Cleanup contains **Clear Cavities** in the Simplify group and the command opens the native Block Styler dialog.
 - [ ] Target entities accepts one or more solid bodies and rejects sheet bodies or assembly occurrences.
 - [ ] The cavity collector is populated only after a body is selected; all detected cavity faces are highlighted and the selected body is not highlighted as a whole.
 - [ ] A body with no fully enclosed cavity leaves the collector empty and does not show an error page.

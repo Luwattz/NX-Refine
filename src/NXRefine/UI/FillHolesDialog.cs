@@ -13,9 +13,10 @@ using SelectObject = NXOpen.BlockStyler.SelectObject;
 
 namespace NXRefine.UI
 {
-    // Native Block Styler workflow for selecting bodies, automatically finding
-    // inner-hole seeds, reviewing native Boss/Pocket regions, excluding
-    // connected groups, and healing the exact retained faces on Apply/OK.
+    // Native Block Styler workflow for selecting bodies, recognizing hole
+    // faces with NX's native rule, reviewing native Boss/Pocket regions,
+    // excluding connected groups, and healing the exact retained faces on
+    // Apply/OK.
     internal sealed class FillHolesDialog : IDisposable
     {
         private readonly NxContext context;
@@ -249,46 +250,49 @@ namespace NXRefine.UI
         private Face[][] FindGroups(Body body, double maximumRadius)
         {
             Face[] allFaces = body.GetFaces();
+            var bodyFaces = allFaces.ToDictionary(face => face.Tag);
             var result = new List<Face[]>();
             var seen = new HashSet<Tag>();
             foreach (Face face in allFaces)
             {
-                HoleSeed seed;
-                if (seen.Contains(face.Tag) || !TryGetInnerCylinder(face, body, out seed) ||
-                    (maximumRadius > 0.0 && seed.Radius > maximumRadius)) continue;
+                if (seen.Contains(face.Tag) || face.SolidFaceType != Face.FaceType.Cylindrical) continue;
 
-                // Evaluate NX's actual selection-intent rule for each detected
-                // inner cylinder. Never flood through the body's adjacency graph.
-                ScCollector collector = context.WorkPart.ScCollectors.CreateCollector();
-                Face[] region;
-                try
-                {
-                    FaceBossPocketFacesRule rule =
-                        context.WorkPart.ScRuleFactory.CreateRuleFaceBossPocket(face, false);
-                    collector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
-                    region = collector.GetObjects().OfType<Face>()
-                        .GroupBy(item => item.Tag).Select(items => items.First()).ToArray();
-                }
-                catch (NXException ex)
-                {
-                    context.Log("Fill Holes native expansion failed for " + face.Tag + ": " + ex.Message);
+                // This is the same native Hole Faces selection intent exposed
+                // by NX's Delete Face command. It recognizes the hole first;
+                // the geometric checks below are only safety/radius filters.
+                Face[] holeFaces = FindNativeHoleFaces(face);
+                // Never accept a rule that escaped the selected body. NX's
+                // hole rule is the authority for which faces form the hole.
+                if (holeFaces.Any(item => item == null || !bodyFaces.ContainsKey(item.Tag))) continue;
+                Face[] holeRegion = holeFaces.Where(item => item != null)
+                    .GroupBy(item => item.Tag).Select(items => items.First()).ToArray();
+                if (!holeRegion.Any(item => item.Tag == face.Tag) || holeRegion.Length >= allFaces.Length)
                     continue;
-                }
-                finally { collector.Destroy(); }
-
-                if (!region.Any(item => item.Tag == face.Tag) ||
-                    region.Length >= allFaces.Length ||
+                // Only a hole wall is a suitable Boss/Pocket seed. The native
+                // hole rule can also return floors and entry faces, on which
+                // Boss/Pocket recognition may fail even for a valid hole.
+                Face[] expanded = ExpandNativeBossPocketFaces(face);
+                if (!expanded.Any(item => item.Tag == face.Tag)) continue;
+                Face[] region = holeRegion.Concat(expanded).GroupBy(item => item.Tag)
+                    .Select(items => items.First()).ToArray();
+                // Boss/Pocket can classify nearly the whole body as one
+                // feature (1743 of 1745 faces on test_model_2.prt). Such an
+                // expansion is not a removable hole and must not be offered.
+                if (region.Length > Math.Max(128, allFaces.Length / 5) ||
                     region.Any(item => item.GetBody().Tag != body.Tag)) continue;
 
-                // Reject the whole region if NX returns an exterior cylinder
-                // or a stepped hole that exceeds the limit. Do not trim native
-                // groups into incomplete face sets before healing.
+                // Retain the former inner-wall/coaxial checks only after both
+                // native rules have produced a candidate. Do not use them to
+                // replace the official hole-face recognition above.
+                HoleSeed seed = FindInnerSeed(holeRegion, body);
+                if (seed == null) continue;
                 bool valid = true;
                 foreach (Face item in region.Where(item => item.SolidFaceType == Face.FaceType.Cylindrical))
                 {
+                    double radius = GetCylinderRadius(item);
                     HoleSeed inner;
-                    if (!TryGetInnerCylinder(item, body, out inner) || !IsCoaxial(seed, inner) ||
-                        (maximumRadius > 0.0 && inner.Radius > maximumRadius))
+                    if (radius <= 0.0 || (maximumRadius > 0.0 && radius > maximumRadius) ||
+                        !TryGetInnerCylinder(item, body, out inner) || !IsCoaxial(seed, inner))
                     {
                         valid = false;
                         break;
@@ -312,6 +316,78 @@ namespace NXRefine.UI
             }
             context.Log("Fill Holes: " + result.Count + " native hole groups in body " + body.Tag);
             return result.ToArray();
+        }
+
+        private Face[] FindNativeHoleFaces(Face seed)
+        {
+            ScCollector collector = context.WorkPart.ScCollectors.CreateCollector();
+            // NX 2512 dereferences this parameter in CreateRuleFaceHole:
+            // passing null raises an internal memory-access NXException.
+            SelectionIntentRuleOptions options = context.WorkPart.ScRuleFactory.CreateRuleOptions();
+            try
+            {
+                FaceHoleFacesRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceHole(seed, options);
+                collector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
+                return collector.GetObjects().OfType<Face>()
+                    .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
+            }
+            catch (NXException ex)
+            {
+                context.Log("Fill Holes native hole-face recognition failed for " + seed.Tag + ": " + ex.Message);
+                return new Face[0];
+            }
+            finally
+            {
+                collector.Destroy();
+            }
+        }
+
+        private Face[] ExpandNativeBossPocketFaces(Face seed)
+        {
+            ScCollector collector = context.WorkPart.ScCollectors.CreateCollector();
+            try
+            {
+                FaceBossPocketFacesRule rule =
+                    context.WorkPart.ScRuleFactory.CreateRuleFaceBossPocket(seed, false);
+                collector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
+                return collector.GetObjects().OfType<Face>()
+                    .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
+            }
+            catch (NXException ex)
+            {
+                context.Log("Fill Holes native expansion failed for " + seed.Tag + ": " + ex.Message);
+                return new Face[0];
+            }
+            finally { collector.Destroy(); }
+        }
+
+        private HoleSeed FindInnerSeed(IEnumerable<Face> faces, Body body)
+        {
+            foreach (Face face in faces)
+            {
+                HoleSeed seed;
+                if (TryGetInnerCylinder(face, body, out seed)) return seed;
+            }
+            return null;
+        }
+
+        private double GetCylinderRadius(Face face)
+        {
+            if (face.SolidFaceType != Face.FaceType.Cylindrical) return 0.0;
+            try
+            {
+                int type;
+                int normalDirection;
+                double radiusData;
+                double[] axisPoint = new double[3];
+                double[] axisDirection = new double[3];
+                double[] box = new double[6];
+                double radius;
+                context.UF.Modl.AskFaceData(face.Tag, out type, axisPoint, axisDirection, box,
+                    out radius, out radiusData, out normalDirection);
+                return radius > 0.0 && !double.IsNaN(radius) && !double.IsInfinity(radius) ? radius : 0.0;
+            }
+            catch (NXException) { return 0.0; }
         }
 
         private bool TryGetInnerCylinder(Face face, Body body, out HoleSeed seed)
@@ -556,37 +632,66 @@ namespace NXRefine.UI
                 }
             }
             catch (Exception ex) { return Error(ex); }
-            Face[] selected = RetainedFaces();
-            if (selected.Length == 0) return 1;
-            Session.UndoMarkId mark = context.Session.SetUndoMark(Session.MarkVisibility.Visible, "NX Refine - Fill Holes");
-            DeleteFaceBuilder builder = null;
+            // Delete one connected hole at a time so one unhealable group does
+            // not prevent NX from processing other selected groups.
+            Face[][] selectedGroups = groups.Where(group => group.All(face => retained.Contains(face.Tag)))
+                .Select(group => group.ToArray()).ToArray();
+            if (selectedGroups.Length == 0) return 1;
+            int succeeded = 0;
+            int failed = 0;
+            int filledFaces = 0;
             try
             {
                 Reset();
-                foreach (Face[] bodyFaces in selected.GroupBy(face => face.GetBody().Tag).Select(group => group.ToArray()))
+                foreach (Face[] holeFaces in selectedGroups)
                 {
-                    builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
-                    builder.Type = DeleteFaceBuilder.SelectTypes.Hole;
-                    builder.Heal = true;
-                    builder.UseHoleDiameter = false;
-                    FaceDumbRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(bodyFaces);
-                    builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
-                    builder.CommitFeature();
-                    builder.Destroy();
-                    builder = null;
+                    Session.UndoMarkId mark = context.Session.SetUndoMark(
+                        Session.MarkVisibility.Visible, "NX Refine - Fill Hole");
+                    DeleteFaceBuilder builder = null;
+                    Exception failure = null;
+                    try
+                    {
+                        builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
+                        builder.Type = DeleteFaceBuilder.SelectTypes.Hole;
+                        builder.Heal = true;
+                        builder.UseHoleDiameter = false;
+                        FaceDumbRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(holeFaces);
+                        builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
+                        builder.CommitFeature();
+                        succeeded++;
+                        filledFaces += holeFaces.Length;
+                    }
+                    catch (Exception ex) { failure = ex; }
+                    finally
+                    {
+                        // The builder must be destroyed before undo. NX makes
+                        // it inactive during rollback; Destroy after undo then
+                        // raises an unhandled Block Styler callback exception.
+                        if (builder != null)
+                        {
+                            try { builder.Destroy(); }
+                            catch (Exception ex) { context.Log("Fill Holes builder cleanup: " + ex); }
+                        }
+                    }
+                    if (failure != null)
+                    {
+                        failed++;
+                        context.Log("Fill Holes skipped group " + failed + ": " + failure);
+                        try { context.Session.UndoToMark(mark, "NX Refine - Fill Hole"); }
+                        catch (Exception ex) { context.Log("Fill Holes rollback failed: " + ex); return Error(ex); }
+                    }
                 }
-                context.Log("Filled " + selected.Length + " hole faces.");
-                return 0;
+                context.Log("Fill Holes: filled " + succeeded + " groups (" + filledFaces +
+                    " faces), skipped " + failed + " groups.");
+                if (failed > 0) return Error(new InvalidOperationException(
+                    "部分孔无法由剩余面闭合：已填充 " + succeeded + " 个，跳过 " + failed + " 个。详情见 NX 日志。"));
+                return succeeded > 0 ? 0 : 1;
             }
-            catch (Exception ex)
-            {
-                context.Session.UndoToMark(mark, "NX Refine - Fill Holes");
-                return Error(ex);
-            }
+            catch (Exception ex) { return Error(ex); }
             finally
             {
-                if (builder != null) builder.Destroy();
-                context.UF.Disp.Refresh();
+                try { context.UF.Disp.Refresh(); }
+                catch (Exception ex) { context.Log("Fill Holes display refresh: " + ex); }
             }
         }
 

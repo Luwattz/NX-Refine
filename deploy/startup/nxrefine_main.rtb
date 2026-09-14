@@ -1,5 +1,5 @@
 ! NX Refine ribbon tab
-TITLE Geometry Cleanup
+TITLE Cleanup
 VERSION 170
 
 BEGIN_GROUP NX_REFINE_SIMPLIFY_GROUP

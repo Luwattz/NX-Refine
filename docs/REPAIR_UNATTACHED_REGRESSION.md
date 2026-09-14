@@ -4,7 +4,7 @@ These checks require Siemens NX 2512 and should be run on disposable copies of t
 
 ## Dialog and selection
 
-- [ ] Geometry Cleanup contains **Repair Unattached Faces** in the Repair group and opens the native Block Styler dialog.
+- [ ] Cleanup contains **Repair Unattached Faces** in the Repair group and opens the native Block Styler dialog.
 - [ ] Target entities accepts one or more solid bodies and ignores sheet bodies or assembly occurrences.
 - [ ] The maximum gap field starts from its saved value (default `0.01`) and accepts decimal input in current part units.
 - [ ] Typing a value such as `0.2` does not start a scan after the first `0`; Enter, leaving the field, or an action button commits it once.
