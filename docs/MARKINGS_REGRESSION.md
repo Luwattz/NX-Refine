@@ -1,5 +1,24 @@
 # Remove Markings regression checks
 
+## model2 production regression
+
+Run `scripts/test-nx-markings-model.ps1 -PartPath D:\change\model2.prt`
+against the private 13-face model2 fixture (not redistributed). The default
+plugin under test is `deploy/application/NXRefine.dll`, the directory registered
+with NX; use `-PluginPath` to test a different build. The script creates a unique
+disposable copy in `artifacts`, runs the production `ScanBody` method inside NX,
+and tests the same Delete Face / Heal settings as Apply. It requires 0 faces at
+0.1 mm and exactly 7 faces in one group at 0.2, 2, and 50 mm; healing must produce
+one consistent six-face solid and undo must restore 13 faces. It never saves the
+fixture, verifies the input file hash, and requires an explicit PASS report.
+This does not exercise the interactive collector/Apply callbacks below.
+
+Build with `scripts/build.ps1` to copy the binaries into the registered deploy
+directory. A build using `SkipDeploy=true` updates only `bin`, so it does not
+update the plugin used by the NX ribbon. Restart NX after updating deployment.
+
+## Interactive checks
+
 Run these checks in NX 2512 on a disposable part containing a planar carrier,
 disconnected lettering at several heights, and taller bosses. This is a manual
 integration checklist: compilation alone cannot verify native selection repaint.
@@ -49,6 +68,10 @@ integration checklist: compilation alone cannot verify native selection repaint.
   cancellation after a successful Apply; earlier applied passes remain until Undo.
 - No completion/cancellation Listing Window should open. Failed healing must
   roll back and require a fresh scan.
+- On a thin solid whose wall thickness is below the maximum marking height,
+  select a B-surface or offset-surface carrier. Confirm that the exterior
+  support faces are not candidates, while a shallow marking on an interior
+  carrier loop is measured along the evaluated carrier normal and is selected.
 
 ## Local validation, 2026-09-12
 

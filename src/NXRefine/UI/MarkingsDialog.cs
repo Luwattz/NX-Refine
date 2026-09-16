@@ -346,6 +346,12 @@ namespace NXRefine.UI
             var adjacency = faces.Keys.ToDictionary(tag => tag, tag => new HashSet<Tag>());
             var boundary = new HashSet<Tag>();
             var references = new Dictionary<Tag, HashSet<Tag>>();
+            // Removing a thin carrier can leave the underlying body as a shallow
+            // connected component.  It is not a marking: it is the support
+            // reached through the carrier's exterior boundary loop.  Record
+            // those faces separately so thickness alone can never select them.
+            var exteriorEdges = bodyCarriers.ToDictionary(face => face.Tag, ExteriorBoundaryEdges);
+            var supportFaces = bodyCarriers.ToDictionary(face => face.Tag, face => new HashSet<Tag>());
             foreach (Edge edge in body.GetEdges())
             {
                 Face[] touching = edge.GetFaces();
@@ -361,7 +367,12 @@ namespace NXRefine.UI
                             faceReferences = new HashSet<Tag>();
                             references.Add(face.Tag, faceReferences);
                         }
-                        foreach (Face reference in touchingCarriers) faceReferences.Add(reference.Tag);
+                        foreach (Face reference in touchingCarriers)
+                        {
+                            faceReferences.Add(reference.Tag);
+                            if (exteriorEdges[reference.Tag].Contains(edge.Tag))
+                                supportFaces[reference.Tag].Add(face.Tag);
+                        }
                     }
                     foreach (Face other in touching.Where(f => faces.ContainsKey(f.Tag) && f.Tag != face.Tag))
                         adjacency[face.Tag].Add(other.Tag);
@@ -381,7 +392,9 @@ namespace NXRefine.UI
                 foreach (Face face in component) seen.Add(face.Tag);
                 Face[] componentCarriers = component.SelectMany(face =>
                     references.ContainsKey(face.Tag) ? references[face.Tag] : Enumerable.Empty<Tag>())
-                    .Distinct().Where(carrierTags.Contains).Select(tag => carriers[tag]).ToArray();
+                    .Distinct().Where(tag => carrierTags.Contains(tag) &&
+                        !component.Any(face => supportFaces[tag].Contains(face.Tag)))
+                    .Select(tag => carriers[tag]).ToArray();
                 if (componentCarriers.Length == 0) continue;
                 // A group touching more than one selected carrier is accepted
                 // when it satisfies the height limit relative to any carrier.
@@ -416,33 +429,24 @@ namespace NXRefine.UI
 
         private double FeatureHeight(IEnumerable<Face> faces, Face carrier)
         {
-            // The selected carrier supplies the reference normal. Projecting
-            // actual topology vertices onto that normal measures height without
-            // mixing character width into the result.  Projecting an axis-aligned
-            // WCS bounding box is not valid here: when the carrier normal is not
-            // aligned to WCS, a wide character can falsely appear much taller.
-            double[] point = new double[3];
-            double[] normal = new double[3];
-            double[] carrierBox = new double[6];
-            int type;
-            double radius;
-            double radialData;
-            int normDirection;
-            context.UF.Modl.AskFaceData(carrier.Tag, out type, point, normal, carrierBox,
-                out radius, out radialData, out normDirection);
+            // AskFaceData supplies a normal only for selected analytic surface
+            // types.  For B-surfaces it legitimately returns a zero direction;
+            // falling back to a WCS axis makes the result position-dependent.
+            // Evaluate the carrier surface near this component instead.  This
+            // also returns an actual surface normal for cylinders and cones,
+            // rather than their axis direction.
+            Face[] component = faces.ToArray();
+            Point3d reference = ComponentReference(component);
+            double[] point;
+            double[] normal;
+            if (!TryCarrierFrame(carrier, reference, out point, out normal))
+                throw new InvalidOperationException("Could not evaluate the selected carrier face " + carrier.Tag + ".");
             double normalLength = Math.Sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
-            if (normalLength < 1e-9)
-            {
-                normal[0] = 0;
-                normal[1] = 0;
-                normal[2] = 1;
-                normalLength = 1;
-            }
             for (int i = 0; i < 3; i++) normal[i] /= normalLength;
             double carrierProjection = Dot(point, normal);
             double height = 0;
             bool sampled = false;
-            foreach (Edge edge in faces.SelectMany(face => face.GetEdges())
+            foreach (Edge edge in component.SelectMany(face => face.GetEdges())
                 .GroupBy(edge => edge.Tag).Select(group => group.First()))
             {
                 try
@@ -458,7 +462,157 @@ namespace NXRefine.UI
             }
             // A closed analytic face can exceptionally have no usable edge
             // vertices.  Preserve a conservative fallback for that case only.
-            return sampled ? height : BoundingBoxHeight(faces, carrierProjection, normal);
+            return sampled ? height : BoundingBoxHeight(component, carrierProjection, normal);
+        }
+
+        private Point3d ComponentReference(IEnumerable<Face> faces)
+        {
+            double x = 0;
+            double y = 0;
+            double z = 0;
+            int count = 0;
+            foreach (Edge edge in faces.SelectMany(face => face.GetEdges())
+                .GroupBy(edge => edge.Tag).Select(group => group.First()))
+            {
+                try
+                {
+                    Point3d first;
+                    Point3d second;
+                    edge.GetVertices(out first, out second);
+                    x += first.X + second.X;
+                    y += first.Y + second.Y;
+                    z += first.Z + second.Z;
+                    count += 2;
+                }
+                catch (NXException) { }
+            }
+            if (count > 0) return new Point3d(x / count, y / count, z / count);
+            var box = new double[6];
+            context.UF.Modl.AskBoundingBox(faces.First().Tag, box);
+            return new Point3d((box[0] + box[3]) * 0.5, (box[1] + box[4]) * 0.5, (box[2] + box[5]) * 0.5);
+        }
+
+        private bool TryCarrierFrame(Face carrier, Point3d reference, out double[] point, out double[] normal)
+        {
+            point = new double[3];
+            normal = new double[3];
+            var parameter = new double[2];
+            try
+            {
+                context.UF.Modl.AskFaceParm(carrier.Tag,
+                    new[] { reference.X, reference.Y, reference.Z }, parameter, point);
+                context.UF.Modl.AskFaceProps(carrier.Tag, parameter, point,
+                    new double[3], new double[3], new double[3], new double[3], normal, new double[2]);
+                if (VectorLength(normal) >= 1e-9) return true;
+            }
+            catch (NXException) { }
+
+            // A projection can fail near a trim boundary.  The underlying
+            // surface midpoint remains a safe, coordinate-system-independent
+            // fallback and works for untrimmed analytic and parametric faces.
+            try
+            {
+                var limits = new double[4];
+                context.UF.Modl.AskFaceUvMinmax(carrier.Tag, limits);
+                parameter[0] = (limits[0] + limits[1]) * 0.5;
+                parameter[1] = (limits[2] + limits[3]) * 0.5;
+                context.UF.Modl.AskFaceProps(carrier.Tag, parameter, point,
+                    new double[3], new double[3], new double[3], new double[3], normal, new double[2]);
+                return VectorLength(normal) >= 1e-9;
+            }
+            catch (NXException) { return false; }
+        }
+
+        private HashSet<Tag> ExteriorBoundaryEdges(Face carrier)
+        {
+            Edge[] edges = carrier.GetEdges();
+            if (edges.Length == 0) return new HashSet<Tag>();
+            double tolerance = context.WorkPart.PartUnits == BasePart.Units.Inches ? 1e-7 / 25.4 : 1e-7;
+
+            var loops = new List<List<Edge>>();
+            foreach (Edge edge in edges)
+            {
+                var joined = loops.Where(loop => loop.Any(item => EdgesMeet(item, edge, tolerance))).ToArray();
+                if (joined.Length == 0)
+                {
+                    loops.Add(new List<Edge> { edge });
+                    continue;
+                }
+                joined[0].Add(edge);
+                foreach (List<Edge> merge in joined.Skip(1).ToArray())
+                {
+                    joined[0].AddRange(merge);
+                    loops.Remove(merge);
+                }
+            }
+            // Repeated merging closes transitive chains when input edge order is
+            // interleaved between loops.
+            bool changed;
+            do
+            {
+                changed = false;
+                for (int first = 0; first < loops.Count && !changed; first++)
+                    for (int second = first + 1; second < loops.Count; second++)
+                        if (loops[first].Any(a => loops[second].Any(b => EdgesMeet(a, b, tolerance))))
+                        {
+                            loops[first].AddRange(loops[second]);
+                            loops.RemoveAt(second);
+                            changed = true;
+                            break;
+                        }
+            } while (changed);
+
+            List<Edge> exterior = loops.OrderByDescending(LoopSpanSquared).First();
+            return new HashSet<Tag>(exterior.Select(edge => edge.Tag));
+        }
+
+        private bool EdgesMeet(Edge first, Edge second, double tolerance)
+        {
+            try
+            {
+                Point3d firstStart;
+                Point3d firstEnd;
+                Point3d secondStart;
+                Point3d secondEnd;
+                first.GetVertices(out firstStart, out firstEnd);
+                second.GetVertices(out secondStart, out secondEnd);
+                return PointsMeet(firstStart, secondStart, tolerance) || PointsMeet(firstStart, secondEnd, tolerance) ||
+                    PointsMeet(firstEnd, secondStart, tolerance) || PointsMeet(firstEnd, secondEnd, tolerance);
+            }
+            catch (NXException) { return false; }
+        }
+
+        private static bool PointsMeet(Point3d first, Point3d second, double tolerance)
+        {
+            double x = first.X - second.X;
+            double y = first.Y - second.Y;
+            double z = first.Z - second.Z;
+            return x * x + y * y + z * z <= tolerance * tolerance;
+        }
+
+        private double LoopSpanSquared(IEnumerable<Edge> edges)
+        {
+            double[] bounds = { double.MaxValue, double.MaxValue, double.MaxValue,
+                double.MinValue, double.MinValue, double.MinValue };
+            foreach (Edge edge in edges)
+            {
+                var box = new double[6];
+                context.UF.Modl.AskBoundingBox(edge.Tag, box);
+                for (int axis = 0; axis < 3; axis++)
+                {
+                    bounds[axis] = Math.Min(bounds[axis], box[axis]);
+                    bounds[axis + 3] = Math.Max(bounds[axis + 3], box[axis + 3]);
+                }
+            }
+            double x = bounds[3] - bounds[0];
+            double y = bounds[4] - bounds[1];
+            double z = bounds[5] - bounds[2];
+            return x * x + y * y + z * z;
+        }
+
+        private static double VectorLength(double[] vector)
+        {
+            return Math.Sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
         }
 
         private static double DistanceFromCarrier(Point3d point, double carrierProjection, double[] normal)
