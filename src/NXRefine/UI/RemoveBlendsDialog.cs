@@ -169,6 +169,26 @@ namespace NXRefine.UI
 
         private void RebuildCandidates()
         {
+            bool wasUpdating = updating;
+            updating = true;
+            try
+            {
+                using (var scan = new SelectionScan(context))
+                {
+                    RebuildCandidatesCore();
+                    SelectionScan.Checkpoint();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                Reset();
+                context.Log("选面识别已停止；可重新选择后继续。");
+            }
+            finally { updating = wasUpdating; }
+        }
+
+        private void RebuildCandidatesCore()
+        {
             radiusTimer.Stop();
             previewTimer.Stop();
             previewValid = false;
@@ -183,8 +203,10 @@ namespace NXRefine.UI
             settings.Save();
             foreach (Body body in bodies.Values)
             {
+                SelectionScan.Checkpoint();
                 foreach (Face face in body.GetFaces())
                 {
+                    SelectionScan.Checkpoint();
                     double radius;
                     bool isBlend;
                     if (!TryGetBlend(face, out radius, out isBlend)) continue;
@@ -504,6 +526,7 @@ namespace NXRefine.UI
             var seen = new HashSet<string>();
             foreach (Face seed in seeds)
             {
+                SelectionScan.Checkpoint();
                 ScCollector collector = context.WorkPart.ScCollectors.CreateCollector();
                 try
                 {
@@ -543,12 +566,14 @@ namespace NXRefine.UI
                 // if it made no progress. Never trim a rule into fixed face subsets.
                 foreach (int mode in new[] { 3, 0, 1, 2 })
                 {
+                    SelectionScan.Checkpoint();
                     if (!DeleteBudgetAvailable()) break;
                     ConnectedChain[] chains = BuildChainsForMode(ResolveCurrentFaces(seedPool), mode);
                     foreach (ConnectedChain chain in chains)
                         foreach (Face face in chain.Faces) seedPool.Add(face.Tag);
                     foreach (ConnectedChain chain in chains.OrderByDescending(item => item.Faces.Length))
                     {
+                        SelectionScan.Checkpoint();
                         if (!DeleteBudgetAvailable()) break;
                         Face seed = ResolveCurrentFaces(new[] { chain.Seed }).FirstOrDefault();
                         if (seed != null && TryDeleteChainForMode(seed, mode, attemptedRegions))

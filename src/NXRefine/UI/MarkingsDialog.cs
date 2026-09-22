@@ -138,6 +138,7 @@ namespace NXRefine.UI
 
             foreach (Tag removed in carriers.Keys.Where(tag => !selectedTags.Contains(tag)).ToArray())
             {
+                SelectionScan.Checkpoint();
                 carriers.Remove(removed);
                 carriersChanged = true;
             }
@@ -147,6 +148,7 @@ namespace NXRefine.UI
             // become deletion reference faces by accident.
             foreach (Face face in selected.Where(face => !carriers.ContainsKey(face.Tag) && !candidateTags.Contains(face.Tag)))
             {
+                SelectionScan.Checkpoint();
                 Body selectedBody = face.GetBody();
                 if (face.IsOccurrence || selectedBody == null || !selectedBody.IsSolidBody)
                     throw new InvalidOperationException("Select solid-body carrier faces in the work part.");
@@ -170,6 +172,26 @@ namespace NXRefine.UI
         }
 
         private void RebuildCandidates()
+        {
+            bool wasUpdating = updating;
+            updating = true;
+            try
+            {
+                using (var scan = new SelectionScan(context))
+                {
+                    RebuildCandidatesCore();
+                    SelectionScan.Checkpoint();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                Reset();
+                context.Log("选面识别已停止；可重新选择后继续。");
+            }
+            finally { updating = wasUpdating; }
+        }
+
+        private void RebuildCandidatesCore()
         {
             heightTimer.Stop();
             previewTimer.Stop();
@@ -354,10 +376,12 @@ namespace NXRefine.UI
             var supportFaces = bodyCarriers.ToDictionary(face => face.Tag, face => new HashSet<Tag>());
             foreach (Edge edge in body.GetEdges())
             {
+                SelectionScan.Checkpoint();
                 Face[] touching = edge.GetFaces();
                 Face[] touchingCarriers = touching.Where(face => carrierTags.Contains(face.Tag)).ToArray();
                 foreach (Face face in touching.Where(f => faces.ContainsKey(f.Tag)))
                 {
+                    SelectionScan.Checkpoint();
                     if (touchingCarriers.Length > 0)
                     {
                         boundary.Add(face.Tag);
@@ -369,6 +393,7 @@ namespace NXRefine.UI
                         }
                         foreach (Face reference in touchingCarriers)
                         {
+                            SelectionScan.Checkpoint();
                             faceReferences.Add(reference.Tag);
                             if (exteriorEdges[reference.Tag].Contains(edge.Tag))
                                 supportFaces[reference.Tag].Add(face.Tag);
@@ -381,6 +406,7 @@ namespace NXRefine.UI
             var seen = new HashSet<Tag>();
             foreach (Tag seed in boundary)
             {
+                SelectionScan.Checkpoint();
                 if (seen.Contains(seed)) continue;
                 // Candidate discovery deliberately uses only body topology.
                 // NX's Boss/Pocket selection-intent rule remains available in
@@ -418,6 +444,7 @@ namespace NXRefine.UI
             queue.Enqueue(seed);
             while (queue.Count > 0)
             {
+                SelectionScan.Checkpoint();
                 Tag tag = queue.Dequeue();
                 if (!visited.Add(tag) || !faces.ContainsKey(tag)) continue;
                 component.Add(faces[tag]);
@@ -532,6 +559,7 @@ namespace NXRefine.UI
             var loops = new List<List<Edge>>();
             foreach (Edge edge in edges)
             {
+                SelectionScan.Checkpoint();
                 var joined = loops.Where(loop => loop.Any(item => EdgesMeet(item, edge, tolerance))).ToArray();
                 if (joined.Length == 0)
                 {
@@ -541,6 +569,7 @@ namespace NXRefine.UI
                 joined[0].Add(edge);
                 foreach (List<Edge> merge in joined.Skip(1).ToArray())
                 {
+                    SelectionScan.Checkpoint();
                     joined[0].AddRange(merge);
                     loops.Remove(merge);
                 }
@@ -596,10 +625,12 @@ namespace NXRefine.UI
                 double.MinValue, double.MinValue, double.MinValue };
             foreach (Edge edge in edges)
             {
+                SelectionScan.Checkpoint();
                 var box = new double[6];
                 context.UF.Modl.AskBoundingBox(edge.Tag, box);
                 for (int axis = 0; axis < 3; axis++)
                 {
+                    SelectionScan.Checkpoint();
                     bounds[axis] = Math.Min(bounds[axis], box[axis]);
                     bounds[axis + 3] = Math.Max(bounds[axis + 3], box[axis + 3]);
                 }
@@ -627,12 +658,14 @@ namespace NXRefine.UI
             double high = double.MinValue;
             foreach (Face face in faces)
             {
+                SelectionScan.Checkpoint();
                 var box = new double[6];
                 context.UF.Modl.AskBoundingBox(face.Tag, box);
                 double center = 0;
                 double radiusOnNormal = 0;
                 for (int i = 0; i < 3; i++)
                 {
+                    SelectionScan.Checkpoint();
                     center += normal[i] * (box[i] + box[i + 3]) * 0.5;
                     radiusOnNormal += Math.Abs(normal[i]) * (box[i + 3] - box[i]) * 0.5;
                 }

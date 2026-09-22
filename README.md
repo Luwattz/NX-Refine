@@ -9,7 +9,7 @@ NX Refine is an open-source Siemens NX add-on for geometry validation, defeaturi
 | Group | Command | Current behavior |
 |---|---|---|
 | Simplify | Remove Blends | Filters seed faces by radius, expands native connected fillets, and retries native recognition options to delete healable chains. |
-| Simplify | Fill Holes | Opens a native preview dialog for one or more target entities, NX Hole Faces recognition expanded by NX's Boss and Pocket Faces rule, a maximum hole radius, and a reviewable candidate-face collector. |
+| Simplify | Fill Holes | Opens a native preview dialog with NX Hole Faces recognition, full-angle inner-wall validation, a maximum hole radius, and a reviewable candidate-face collector. |
 | Simplify | Clear Cavities | Opens a native preview dialog for one or more solid bodies, detects face shells that are fully enclosed and disconnected from the outside, and lets you review or exclude cavity groups before healing them. |
 | Repair | Repair Unattached Faces | Opens a native preview dialog for one or more solid bodies, finds non-adjacent faces whose minimum separation is within the selected gap tolerance, and repairs retained gaps with native Sew or Delete Face/Heal operations. |
 | Simplify | Remove Markings | Select one or more carrier faces, automatically add their connected candidate groups to the same collector, exclude groups, then Apply or OK to delete and heal retained candidates. Works without feature history; candidates require review. |
@@ -128,12 +128,12 @@ Detection groups selected carriers by solid body, removes all selected carrier f
 
 Fill Holes uses an NX native Block Styler dialog with OK / Apply / Cancel navigation.
 
-1. Select one or more solid bodies in **Target entities**. Inner cylindrical walls are detected automatically and expanded by NX's native **Boss and Pocket Faces** rule. There is no manual seed selector.
-2. Enter **Max hole radius (part units)**. A value of `0` means no radius limit. A positive value limits all inner cylindrical radii in each accepted region.
+1. Select one or more solid bodies in **Target entities**. Inner cylindrical and tapered conical walls are detected using NX's native **Hole Faces** rule. Each analytic wall must cover a full revolution; partial concave edge rounds are excluded. There is no manual seed selector.
+2. Enter **Max hole radius (part units)**. A value of `0` means no radius limit. A positive value limits the largest cylindrical or conical radius in each accepted region, including entrance chamfers.
 3. Review the single **Hole faces to fill** collector. Only pending faces are highlighted; the selected body is not highlighted as a whole. Deselecting any face excludes its entire hole group. Changing bodies rebuilds immediately; a radius edit stays provisional until Enter, focus leaves the field, or Apply/OK is pressed, so an incomplete value cannot start a scan.
-4. **Apply** attempts each retained hole group separately and leaves the dialog open; **OK** fills and closes. **Cancel** clears the preview. Each group has its own NX undo mark; a group that NX cannot heal is skipped and logged without undoing successful groups.
+4. **Apply** attempts each retained hole group separately and leaves the dialog open; **OK** fills and closes. **Cancel** clears the preview. Each group has its own NX undo mark; native Delete Face/Heal (`Face` mode) is tried first and NX's specialized `Hole` mode is used as a fallback. A failed mode is rolled back before retry, and a group that neither mode can heal is skipped without undoing successful groups.
 
-Keep `deploy/application/NXRefine.FillHoles.dlx` beside `NXRefine.dll`; this is the native dialog layout required at runtime. Native NX Hole Faces recognition is followed by native Boss/Pocket expansion and geometric inner-wall validation. There is no adjacency-flood fallback: failed native rules are skipped and logged. All cylindrical walls in a region must be internal and coaxial, preventing rounded rectangular cavities from qualifying as circular holes. Whole-body and near-whole-body expansions are rejected. Recognition does not guarantee that NX can heal the selected faces: on `test_model_2.prt`, even manual NX Delete Face could not close the tested holes.
+Keep `deploy/application/NXRefine.FillHoles.dlx` beside `NXRefine.dll`; this is the native dialog layout required at runtime. Candidates stay within native Hole Faces results; Boss/Pocket expansion is not used because it can include ribs and carrier faces. Accepted analytic walls must face their axis, be mutually coaxial and span a full revolution in their angular parameter. This excludes open concave rounds; split or interrupted hole walls may be missed. There is no adjacency or trial-healing guess. Recognition does not guarantee that NX can heal the selected faces.
 
 ### Clear Cavities workflow
 
@@ -143,7 +143,7 @@ Clear Cavities uses an NX native Block Styler dialog with OK / Apply / Cancel na
 2. Review the **Cavity faces to remove** collector. Detected cavity shells are highlighted before any edit. All detected groups are initially retained; deselecting any face in a connected group removes that complete group from the preview and from the pending operation.
 3. **Apply** deletes and heals only the retained cavity faces and leaves the dialog open; **OK** applies and closes. **Cancel** or Escape clears the preview without changing geometry. Each pass is protected by one NX undo mark.
 
-This is a topology-based enclosed-shell detector, not a semantic recognition system. Imported or non-manifold bodies, self-intersecting faces, and cavities represented by a single connected exterior component may need manual review. The command does not delete the selected body itself, and a failed healing pass is rolled back.
+Detection reads NX's native BREP shell topology in one call per body. NX identifies the first shell as the exterior; remaining shells supply the enclosed cavity groups. This avoids the previous per-edge adjacency reconstruction, whole-body exterior ray scan, and per-shell point/ray queries. Unexpected topology or reported topology states stop detection without enabling deletion. Open pockets and through holes belong to the exterior shell and are retained. The command does not delete the selected body itself, and a failed healing pass is rolled back. See [Clear Cavities regression](docs/CLEAR_CAVITIES_REGRESSION.md) for validation and timing scope.
 
 ### Repair Unattached Faces workflow
 
@@ -157,7 +157,7 @@ This is a geometric proximity detector, not an intent recognizer. Deliberate cle
 
 ## Known limitations
 
-- Hole detection starts from NX's native Hole Faces rule and then evaluates native Boss and Pocket Faces rules; imported bosses, partial cylinders, and unusual face orientations can still require manual review.
+- Hole detection starts from cylindrical or conical wall seeds and uses NX's native Hole Faces rule with inner-wall and full-angle checks; split or interrupted walls may be missed and unusual face orientations require manual review.
 - Small-face deletion is heuristic and may fail when adjacent surfaces cannot be extended safely.
 - `Repair Sheets` currently operates on all sheet bodies in the work part.
 - Patterned-face replacement and missing-face surface reconstruction require topology-aware algorithms planned for later releases. Clear Cavities currently targets fully enclosed face shells; open pockets remain available through Fill Holes or native Delete Face workflows. Repair Unattached Faces is intentionally conservative around non-manifold and deliberately clear geometry.

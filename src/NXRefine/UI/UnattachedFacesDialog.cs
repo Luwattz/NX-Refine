@@ -231,6 +231,26 @@ namespace NXRefine.UI
 
         private void RebuildCandidates()
         {
+            bool wasUpdating = updating;
+            updating = true;
+            try
+            {
+                using (var scan = new SelectionScan(context))
+                {
+                    RebuildCandidatesCore();
+                    SelectionScan.Checkpoint();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                Reset();
+                context.Log("选面识别已停止；可重新选择后继续。");
+            }
+            finally { updating = wasUpdating; }
+        }
+
+        private void RebuildCandidatesCore()
+        {
             Stopwatch elapsed = Stopwatch.StartNew();
             distanceQueries = containmentQueries = 0;
             partialProjectionCacheHits = planarPairsRejected = 0;
@@ -346,6 +366,7 @@ namespace NXRefine.UI
         {
             foreach (Face face in body.GetFaces())
             {
+                SelectionScan.Checkpoint();
                 FaceInfo info;
                 if (TryGetFaceInfo(body, face, out info)) faces[face.Tag] = info;
             }
@@ -397,6 +418,7 @@ namespace NXRefine.UI
             }
             foreach (Tag tag in adjacent ?? new Tag[0])
             {
+                SelectionScan.Checkpoint();
                 FaceInfo neighbor;
                 if (tag == info.Face.Tag || !faces.TryGetValue(tag, out neighbor) || neighbor.Body.Tag != info.Body.Tag) continue;
                 info.Adjacent.Add(tag);
@@ -419,10 +441,12 @@ namespace NXRefine.UI
 
             for (int i = 0; i < sorted.Length && !limitReached; i++)
             {
+                SelectionScan.Checkpoint();
                 FaceInfo first = sorted[i];
                 spatialIndex.FindLater(i, searchTolerance, nearby);
                 foreach (int j in nearby)
                 {
+                    SelectionScan.Checkpoint();
                     FaceInfo second = sorted[j];
                     if (++checks > MaximumPairChecks)
                     {
@@ -473,12 +497,14 @@ namespace NXRefine.UI
             var index = new Dictionary<Tag, int>();
             foreach (GapPair pair in pairs)
             {
+                SelectionScan.Checkpoint();
                 Tag source = SmallerFace(pair.First, pair.Second).Tag;
                 if (!index.ContainsKey(source)) index[source] = index.Count;
             }
             var union = new UnionFind(index.Count);
             foreach (Tag source in index.Keys)
             {
+                SelectionScan.Checkpoint();
                 EnsureAdjacency(faces[source]);
                 foreach (Tag adjacent in faces[source].Adjacent)
                     if (index.ContainsKey(adjacent)) union.Join(index[source], index[adjacent]);
@@ -487,6 +513,7 @@ namespace NXRefine.UI
             var byRoot = new Dictionary<int, List<GapPair>>();
             foreach (GapPair pair in pairs)
             {
+                SelectionScan.Checkpoint();
                 int root = union.Find(index[SmallerFace(pair.First, pair.Second).Tag]);
                 List<GapPair> list;
                 if (!byRoot.TryGetValue(root, out list))
@@ -500,6 +527,7 @@ namespace NXRefine.UI
             var result = new List<GapGroup>();
             foreach (List<GapPair> pairList in byRoot.Values)
             {
+                SelectionScan.Checkpoint();
                 // Carrier faces are references, not selection bridges between
                 // unrelated ribs. Highlight only the small problem-side faces.
                 Face[] groupFaces = pairList.Select(pair => SmallerFace(pair.First, pair.Second))
@@ -545,6 +573,7 @@ namespace NXRefine.UI
                 double vMin = double.MaxValue, vMax = double.MinValue;
                 for (int mask = 0; mask < 8; mask++)
                 {
+                    SelectionScan.Checkpoint();
                     double[] corner = {
                         first.Box[(mask & 1) == 0 ? 0 : 3],
                         first.Box[(mask & 2) == 0 ? 1 : 4],
@@ -566,6 +595,7 @@ namespace NXRefine.UI
                 foreach (double fu in fractions)
                     foreach (double fv in fractions)
                     {
+                        SelectionScan.Checkpoint();
                         sampleIndex++;
                         double du = uMin + fu * uSpan, dv = vMin + fv * vSpan;
                         double[] guess = Enumerable.Range(0, 3)
@@ -728,9 +758,11 @@ namespace NXRefine.UI
                 var samples = new List<double[]>();
                 foreach (double[] anchor in new[] { closestFirst, first.Point ?? closestFirst })
                 {
+                    SelectionScan.Checkpoint();
                     for (int i = -1; i <= 1; i++)
                         for (int j = -1; j <= 1; j++)
                         {
+                            SelectionScan.Checkpoint();
                             double[] guess = Enumerable.Range(0, 3)
                                 .Select(k => anchor[k] + step * (i * u[k] + j * v[k])).ToArray();
                             double[] p, q;
@@ -838,9 +870,11 @@ namespace NXRefine.UI
         {
             foreach (double fraction in new[] { 0.25, 0.5, 0.75 })
             {
+                SelectionScan.Checkpoint();
                 double[] point = Enumerable.Range(0, 3).Select(k => first[k] + fraction * (second[k] - first[k])).ToArray();
                 foreach (Body body in bodies.Values)
                 {
+                    SelectionScan.Checkpoint();
                     int status;
                     if (containment.TryGet(body.Tag, point, out status)) containmentQueryCacheHits++;
                     else
@@ -1089,8 +1123,10 @@ namespace NXRefine.UI
             var crossBodyPairs = new Dictionary<string, List<GapPair>>();
             foreach (GapGroup group in selectedGroups)
             {
+                SelectionScan.Checkpoint();
                 foreach (GapPair pair in group.Pairs)
                 {
+                    SelectionScan.Checkpoint();
                     if (pair.First.Body.Tag == pair.Second.Body.Tag)
                     {
                         Face source = SmallerFace(pair.First, pair.Second);

@@ -14,7 +14,7 @@ using SelectObject = NXOpen.BlockStyler.SelectObject;
 namespace NXRefine.UI
 {
     // Native Block Styler workflow for selecting bodies, recognizing hole
-    // faces with NX's native rule, reviewing native Boss/Pocket regions,
+    // faces with NX's native Hole Faces rule, reviewing validated regions,
     // excluding connected groups, and healing the exact retained faces on
     // Apply/OK.
     internal sealed class FillHolesDialog : IDisposable
@@ -152,6 +152,26 @@ namespace NXRefine.UI
 
         private void RebuildCandidates()
         {
+            bool wasUpdating = updating;
+            updating = true;
+            try
+            {
+                using (var scan = new SelectionScan(context))
+                {
+                    RebuildCandidatesCore();
+                    SelectionScan.Checkpoint();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                Reset();
+                context.Log("选面识别已停止；可重新选择后继续。");
+            }
+            finally { updating = wasUpdating; }
+        }
+
+        private void RebuildCandidatesCore()
+        {
             radiusTimer.Stop();
             previewTimer.Stop();
             previewValid = false;
@@ -253,9 +273,11 @@ namespace NXRefine.UI
             var bodyFaces = allFaces.ToDictionary(face => face.Tag);
             var result = new List<Face[]>();
             var seen = new HashSet<Tag>();
+            int nonInnerSeeds = 0;
             foreach (Face face in allFaces)
             {
-                if (seen.Contains(face.Tag) || face.SolidFaceType != Face.FaceType.Cylindrical) continue;
+                SelectionScan.Checkpoint();
+                if (seen.Contains(face.Tag) || !IsHoleWallType(face)) continue;
 
                 // This is the same native Hole Faces selection intent exposed
                 // by NX's Delete Face command. It recognizes the hole first;
@@ -268,31 +290,29 @@ namespace NXRefine.UI
                     .GroupBy(item => item.Tag).Select(items => items.First()).ToArray();
                 if (!holeRegion.Any(item => item.Tag == face.Tag) || holeRegion.Length >= allFaces.Length)
                     continue;
-                // Only a hole wall is a suitable Boss/Pocket seed. The native
-                // hole rule can also return floors and entry faces, on which
-                // Boss/Pocket recognition may fail even for a valid hole.
-                Face[] expanded = ExpandNativeBossPocketFaces(face);
-                if (!expanded.Any(item => item.Tag == face.Tag)) continue;
-                Face[] region = holeRegion.Concat(expanded).GroupBy(item => item.Tag)
-                    .Select(items => items.First()).ToArray();
-                // Boss/Pocket can classify nearly the whole body as one
-                // feature (1743 of 1745 faces on test_model_2.prt). Such an
-                // expansion is not a removable hole and must not be offered.
-                if (region.Length > Math.Max(128, allFaces.Length / 5) ||
-                    region.Any(item => item.GetBody().Tag != body.Tag)) continue;
+                // Hole Faces defines the reviewed deletion boundary. Boss/Pocket
+                // describes a broader feature and can add ribs, carrier faces
+                // and edge fillets even when its face count looks reasonable.
+                // A successful heal is not evidence that those faces are holes.
+                Face[] region = holeRegion;
 
-                // Retain the former inner-wall/coaxial checks only after both
-                // native rules have produced a candidate. Do not use them to
-                // replace the official hole-face recognition above.
+                // Retain the inner-wall/coaxial checks after native Hole Faces
+                // recognition. Do not use
+                // them to replace the official hole-face recognition above.
                 HoleSeed seed = FindInnerSeed(holeRegion, body);
-                if (seed == null) continue;
-                bool valid = true;
-                foreach (Face item in region.Where(item => item.SolidFaceType == Face.FaceType.Cylindrical))
+                if (seed == null)
                 {
-                    double radius = GetCylinderRadius(item);
+                    nonInnerSeeds++;
+                    continue;
+                }
+                bool valid = true;
+                foreach (Face item in region.Where(IsHoleWallType))
+                {
+                    SelectionScan.Checkpoint();
+                    double radius = GetRevolvedMaximumRadius(item);
                     HoleSeed inner;
-                    if (radius <= 0.0 || (maximumRadius > 0.0 && radius > maximumRadius) ||
-                        !TryGetInnerCylinder(item, body, out inner) || !IsCoaxial(seed, inner))
+                    if (!HasFullAngularSpan(item) || radius <= 0.0 || (maximumRadius > 0.0 && radius > maximumRadius) ||
+                        !TryGetInnerRevolvedFace(item, body, out inner) || !IsCoaxial(seed, inner))
                     {
                         valid = false;
                         break;
@@ -300,11 +320,12 @@ namespace NXRefine.UI
                 }
                 if (!valid) continue;
 
-                // Native regions from different seed cylinders can overlap.
+                // Native regions from different cylindrical/conical wall seeds can overlap.
                 // Merge them so review exclusions always remove the whole hole.
                 var merged = region.ToDictionary(item => item.Tag);
                 for (int i = result.Count - 1; i >= 0; i--)
                 {
+                    SelectionScan.Checkpoint();
                     if (!result[i].Any(item => merged.ContainsKey(item.Tag))) continue;
                     foreach (Face item in result[i]) merged[item.Tag] = item;
                     result.RemoveAt(i);
@@ -314,8 +335,21 @@ namespace NXRefine.UI
                 result.Add(group);
                 foreach (Face item in group) seen.Add(item.Tag);
             }
-            context.Log("Fill Holes: " + result.Count + " native hole groups in body " + body.Tag);
+            context.Log("Fill Holes: " + result.Count + " native hole groups in body " + body.Tag +
+                "; rejected " +
+                nonInnerSeeds + " exterior cylindrical/conical seeds.");
             return result.ToArray();
+        }
+
+        private static bool IsUnsafeExpansion(int regionFaceCount, int bodyFaceCount)
+        {
+            if (bodyFaceCount <= 0 || regionFaceCount >= bodyFaceCount) return true;
+            // Reject at least 80% of any body, and preserve the existing
+            // large-model budget that rejects broad expansions above 128
+            // faces once they exceed one fifth of the body.
+            long region = regionFaceCount;
+            long body = bodyFaceCount;
+            return region * 5 >= body * 4 || (regionFaceCount > 128 && region * 5 > body);
         }
 
         private Face[] FindNativeHoleFaces(Face seed)
@@ -365,15 +399,40 @@ namespace NXRefine.UI
         {
             foreach (Face face in faces)
             {
+                SelectionScan.Checkpoint();
                 HoleSeed seed;
-                if (TryGetInnerCylinder(face, body, out seed)) return seed;
+                if (TryGetInnerRevolvedFace(face, body, out seed)) return seed;
             }
             return null;
         }
 
-        private double GetCylinderRadius(Face face)
+        private static bool IsHoleWallType(Face face)
         {
-            if (face.SolidFaceType != Face.FaceType.Cylindrical) return 0.0;
+            return face != null && (face.SolidFaceType == Face.FaceType.Cylindrical ||
+                face.SolidFaceType == Face.FaceType.Conical);
+        }
+
+        private bool HasFullAngularSpan(Face face)
+        {
+            // NX can return a concave edge fillet as a singleton Hole Faces
+            // rule. Its inward normal and empty axis also pass the inner-wall
+            // checks. Analytic cylinders/cones use U as the angular parameter;
+            // require a full revolution to exclude these open circular arcs.
+            // Split or interrupted hole walls are deliberately not inferred.
+            try
+            {
+                double[] uv = new double[4];
+                context.UF.Modl.AskFaceUvMinmax(face.Tag, uv);
+                double span = uv[1] - uv[0];
+                return !double.IsNaN(span) && !double.IsInfinity(span) &&
+                    Math.Abs(span - 2.0 * Math.PI) <= 1e-6;
+            }
+            catch (NXException) { return false; }
+        }
+
+        private double GetRevolvedMaximumRadius(Face face)
+        {
+            if (!IsHoleWallType(face)) return 0.0;
             try
             {
                 int type;
@@ -385,15 +444,35 @@ namespace NXRefine.UI
                 double radius;
                 context.UF.Modl.AskFaceData(face.Tag, out type, axisPoint, axisDirection, box,
                     out radius, out radiusData, out normalDirection);
-                return radius > 0.0 && !double.IsNaN(radius) && !double.IsInfinity(radius) ? radius : 0.0;
+                if (radius <= 0.0 || double.IsNaN(radius) || double.IsInfinity(radius)) return 0.0;
+                if (face.SolidFaceType == Face.FaceType.Cylindrical) return radius;
+
+                double axisLength = Math.Sqrt(axisDirection.Sum(value => value * value));
+                if (axisLength < 1e-12 || double.IsNaN(radiusData) || double.IsInfinity(radiusData)) return 0.0;
+                double maxStation = 0.0;
+                for (int mask = 0; mask < 8; mask++)
+                {
+                    SelectionScan.Checkpoint();
+                    double station = 0.0;
+                    for (int i = 0; i < 3; i++)
+                    {
+                        SelectionScan.Checkpoint();
+                        double coordinate = box[((mask >> i) & 1) == 0 ? i : i + 3];
+                        station += (coordinate - axisPoint[i]) * axisDirection[i] / axisLength;
+                    }
+                    maxStation = Math.Max(maxStation, Math.Abs(station));
+                }
+                double maximum = radius + Math.Abs(Math.Tan(radiusData)) * maxStation;
+                return maximum > 0.0 && !double.IsNaN(maximum) && !double.IsInfinity(maximum)
+                    ? maximum : 0.0;
             }
             catch (NXException) { return 0.0; }
         }
 
-        private bool TryGetInnerCylinder(Face face, Body body, out HoleSeed seed)
+        private bool TryGetInnerRevolvedFace(Face face, Body body, out HoleSeed seed)
         {
             seed = null;
-            if (face.SolidFaceType != Face.FaceType.Cylindrical) return false;
+            if (!IsHoleWallType(face)) return false;
             try
             {
                 int type;
@@ -405,20 +484,11 @@ namespace NXRefine.UI
                 double radius;
                 context.UF.Modl.AskFaceData(face.Tag, out type, axisPoint, axisDirection, box,
                     out radius, out radiusData, out normalDirection);
-                if (radius <= 0.0 || double.IsNaN(radius) || double.IsInfinity(radius)) return false;
+                double maximumRadius = GetRevolvedMaximumRadius(face);
+                if (maximumRadius <= 0.0) return false;
                 double[] surfacePoint;
                 double[] surfaceNormal;
                 if (!TryGetFacePointNormal(face, out surfacePoint, out surfaceNormal)) return false;
-                double towardAxis = (axisPoint[0] - surfacePoint[0]) * surfaceNormal[0] +
-                    (axisPoint[1] - surfacePoint[1]) * surfaceNormal[1] +
-                    (axisPoint[2] - surfacePoint[2]) * surfaceNormal[2];
-                // Solid-face normals point out of the material. An inner hole
-                // wall points toward its axis; an exterior cylindrical boss
-                // points away from its axis and is therefore rejected.
-                if (towardAxis <= 1e-7) return false;
-                // AskFaceData's axis origin need not lie within the trimmed
-                // cylinder (e.g. it can be below a blind hole's floor). Project
-                // the sampled wall point onto the axis before testing the void.
                 double axisLengthSquared = axisDirection.Sum(value => value * value);
                 if (axisLengthSquared < 1e-12) return false;
                 double station = 0.0;
@@ -426,12 +496,19 @@ namespace NXRefine.UI
                     station += (surfacePoint[i] - axisPoint[i]) * axisDirection[i];
                 for (int i = 0; i < 3; i++)
                     axisPoint[i] += station * axisDirection[i] / axisLengthSquared;
+                double towardAxis = (axisPoint[0] - surfacePoint[0]) * surfaceNormal[0] +
+                    (axisPoint[1] - surfacePoint[1]) * surfaceNormal[1] +
+                    (axisPoint[2] - surfacePoint[2]) * surfaceNormal[2];
+                // Solid-face normals point out of the material. Inner
+                // cylindrical and conical walls point toward their axis;
+                // exterior shafts point away and are rejected.
+                if (towardAxis <= 1e-7) return false;
                 int containment;
                 context.UF.Modl.AskPointContainment(axisPoint, body.Tag, out containment);
-                // The cylinder axis point is in the void for an inner hole;
-                // an exterior boss has its axis point inside the solid.
+                // The local axis point is in the void for an inner revolved
+                // wall; an exterior boss has its axis point inside the solid.
                 if (containment == 1) return false;
-                seed = new HoleSeed(face, axisPoint, axisDirection, radius);
+                seed = new HoleSeed(face, axisPoint, axisDirection, maximumRadius);
                 return true;
             }
             catch (NXException) { return false; }
@@ -476,6 +553,7 @@ namespace NXRefine.UI
             double distanceSquared = 0.0;
             for (int i = 0; i < 3; i++)
             {
+                SelectionScan.Checkpoint();
                 dot += first.Axis[i] * second.Axis[i] / (firstLength * secondLength);
                 double delta = second.AxisPoint[i] - first.AxisPoint[i];
                 along += delta * first.Axis[i] / firstLength;
@@ -645,34 +723,17 @@ namespace NXRefine.UI
                 Reset();
                 foreach (Face[] holeFaces in selectedGroups)
                 {
+                    SelectionScan.Checkpoint();
                     Session.UndoMarkId mark = context.Session.SetUndoMark(
                         Session.MarkVisibility.Visible, "NX Refine - Fill Hole");
-                    DeleteFaceBuilder builder = null;
                     Exception failure = null;
                     try
                     {
-                        builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
-                        builder.Type = DeleteFaceBuilder.SelectTypes.Hole;
-                        builder.Heal = true;
-                        builder.UseHoleDiameter = false;
-                        FaceDumbRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(holeFaces);
-                        builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
-                        builder.CommitFeature();
+                        DeleteReviewedHoleFaces(holeFaces);
                         succeeded++;
                         filledFaces += holeFaces.Length;
                     }
                     catch (Exception ex) { failure = ex; }
-                    finally
-                    {
-                        // The builder must be destroyed before undo. NX makes
-                        // it inactive during rollback; Destroy after undo then
-                        // raises an unhandled Block Styler callback exception.
-                        if (builder != null)
-                        {
-                            try { builder.Destroy(); }
-                            catch (Exception ex) { context.Log("Fill Holes builder cleanup: " + ex); }
-                        }
-                    }
                     if (failure != null)
                     {
                         failed++;
@@ -692,6 +753,75 @@ namespace NXRefine.UI
             {
                 try { context.UF.Disp.Refresh(); }
                 catch (Exception ex) { context.Log("Fill Holes display refresh: " + ex); }
+            }
+        }
+
+        private void DeleteReviewedHoleFaces(Face[] reviewedFaces)
+        {
+            Tag[] tags = reviewedFaces.Select(face => face.Tag).Distinct().ToArray();
+            Exception firstFailure;
+            if (TryDeleteReviewedFaces(tags, DeleteFaceBuilder.SelectTypes.Face, out firstFailure))
+                return;
+
+            // Face + Heal matches the normal native Delete Face workflow and
+            // is preferred. Hole mode remains a compatibility fallback for
+            // regions that rely on NX's specialized hole processing.
+            Exception holeFailure;
+            if (TryDeleteReviewedFaces(tags, DeleteFaceBuilder.SelectTypes.Hole, out holeFailure))
+            {
+                context.Log("Fill Holes used Hole-mode fallback after Face-mode failed: " + firstFailure.Message);
+                return;
+            }
+            throw new InvalidOperationException("Face-mode and Hole-mode healing both failed. Face: " +
+                firstFailure.Message + " Hole: " + holeFailure.Message, holeFailure);
+        }
+
+        private bool TryDeleteReviewedFaces(Tag[] faceTags, DeleteFaceBuilder.SelectTypes type,
+            out Exception failure)
+        {
+            failure = null;
+            bool committed = false;
+            Session.UndoMarkId attemptMark = context.Session.SetUndoMark(
+                Session.MarkVisibility.Invisible, "NX Refine - Fill Hole Attempt");
+            DeleteFaceBuilder builder = null;
+            try
+            {
+                var requested = new HashSet<Tag>(faceTags);
+                Face[] currentFaces = context.WorkPart.Bodies.ToArray().SelectMany(body => body.GetFaces())
+                    .Where(face => requested.Contains(face.Tag)).ToArray();
+                if (currentFaces.Length != requested.Count)
+                    throw new InvalidOperationException("The reviewed hole faces are no longer present.");
+                builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
+                builder.Type = type;
+                builder.Heal = true;
+                builder.UseHoleDiameter = false;
+                FaceDumbRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(currentFaces);
+                builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
+                builder.CommitFeature();
+                committed = true;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+                return false;
+            }
+            finally
+            {
+                // Builders must be destroyed before rollback; NX invalidates
+                // a failed builder when UndoToMark restores the attempt.
+                if (builder != null)
+                {
+                    try { builder.Destroy(); }
+                    catch (Exception ex) { context.Log("Fill Holes builder cleanup: " + ex); }
+                }
+                if (!committed)
+                {
+                    try { context.Session.UndoToMark(attemptMark, null); }
+                    finally { context.Session.DeleteUndoMark(attemptMark, null); }
+                }
+                else
+                    context.Session.DeleteUndoMark(attemptMark, null);
             }
         }
 

@@ -55,10 +55,12 @@
     <Compile Include="Core\CleanupSettings.cs" />
     <Compile Include="Core\Issue.cs" />
     <Compile Include="Core\NxContext.cs" />
+    <Compile Include="Core\SelectionScan.cs" />
     <Compile Include="Analysis\GeometryAnalyzer.cs" />
     <Compile Include="Analysis\GapCriteria.cs" />
     <Compile Include="Analysis\FaceBoxIndex.cs" />
     <Compile Include="Analysis\PointQueryCache.cs" />
+    <Compile Include="Analysis\CavityShellDetector.cs" />
     <Compile Include="Repair\CleanupEngine.cs" />
     <Compile Include="UI\SettingsForm.cs" />
     <Compile Include="UI\RemoveBlendsDialog.cs" />
