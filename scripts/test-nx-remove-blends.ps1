@@ -19,5 +19,5 @@ if ($CompileOnly) { Write-Host "Compiled NX blend deletion regression."; exit 0 
 if (-not (Test-Path -LiteralPath $assembly)) { throw "Build the Release production DLL first." }
 $env:UGII_BASE_DIR = $NXInstallDir
 $env:PATH = (Join-Path $NXInstallDir "NXBIN") + ";" + $env:PATH
-& (Join-Path $NXInstallDir "NXBIN\run_journal.exe") (Join-Path $repositoryRoot "tests\RunNxRemoveBlendsBench.cs") -args $executable $partFile $assembly $MinimumRemoved $RepeatCount $MinimumSecondRoundRemoved
+& (Join-Path $NXInstallDir "NXBIN\run_dotnet_nxopen.exe") $executable $partFile $assembly $MinimumRemoved $RepeatCount $MinimumSecondRoundRemoved
 exit $LASTEXITCODE

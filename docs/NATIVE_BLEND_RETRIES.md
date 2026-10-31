@@ -46,6 +46,26 @@ case where the fixed expanded mode stops but another native mode succeeds.
 - Failure logs include seed, recognition mode, selected face count and NX error
   code. Mode bits are 1 = blend-like, 2 = unlabeled.
 
+As of the 2026-10-31 rearLamp fix, deletion streams complete rules in current
+seed order instead of materializing and sorting an entire mode's chain list
+before the first attempt. It destroys the recognition collector before
+yielding a chain, recreates the live rule in the delete builder, and discards
+the enumerator after every successful commit. The next pass resolves current
+seeds and clears the previous topology's failure cache. Recognition checks
+the delete budget before each seed. Preview explicitly ignores that deletion
+budget, including an exhausted budget from a previous Apply. Native calls
+taking at least one second are logged individually. This changes operation
+order and time-limited removal counts; it does not split native chains or
+change radius/exclusion semantics. The older benchmark below is historical.
+
+The housing-specific follow-up rotates the surviving source-seed order after
+each commit. Recognition resumes after the successful source seed, eventually
+wrapping around to earlier failures on the current topology. New native
+expansion faces are appended to the live pool. This avoids repeatedly spending
+the budget on the same failed prefix while retaining full native rules,
+manual exclusions, rollback and all four recognition modes. See
+`HOUSING_BLEND_OPTIMIZATION.md` for the measured scope and limitations.
+
 ## Validation
 
 All four modes passed the synthetic NX journal: native deletion, radius ignored

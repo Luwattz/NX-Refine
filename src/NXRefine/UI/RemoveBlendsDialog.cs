@@ -522,11 +522,20 @@ namespace NXRefine.UI
 
         private ConnectedChain[] BuildChainsForMode(Face[] seeds, int mode)
         {
-            var result = new List<ConnectedChain>();
+            // Preview must remain complete, independently of a previous
+            // deletion's stopped clock or exhausted attempt count.
+            return EnumerateChainsForMode(seeds, mode, false).ToArray();
+        }
+
+        private IEnumerable<ConnectedChain> EnumerateChainsForMode(Face[] seeds, int mode, bool checkDeleteBudget)
+        {
             var seen = new HashSet<string>();
             foreach (Face seed in seeds)
             {
                 SelectionScan.Checkpoint();
+                if (checkDeleteBudget && !DeleteBudgetAvailable()) yield break;
+                ConnectedChain chain = null;
+                var clock = Stopwatch.StartNew();
                 ScCollector collector = context.WorkPart.ScCollectors.CreateCollector();
                 try
                 {
@@ -538,12 +547,20 @@ namespace NXRefine.UI
                     // synthesize uncovered single faces, or union overlapping rules.
                     if (region.Length == 0 || region.Any(face => face.GetBody().Tag != seed.GetBody().Tag)) continue;
                     string key = string.Join(",", region.Select(face => face.Tag.ToString()));
-                    if (seen.Add(key)) result.Add(new ConnectedChain { Seed = seed.Tag, Faces = region });
+                    if (seen.Add(key)) chain = new ConnectedChain { Seed = seed.Tag, Faces = region };
                 }
                 catch (NXException ex) { context.Log("Connected blend recognition failed: " + ex.Message); }
-                finally { collector.Destroy(); }
+                finally
+                {
+                    collector.Destroy();
+                    if (clock.ElapsedMilliseconds >= 1000)
+                        context.Log("Remove Blends slow native recognition: seed=" + seed.Tag +
+                            ", mode=" + mode + ", " + clock.ElapsedMilliseconds + " ms.");
+                }
+                // Destroy the temporary collector before the caller mutates
+                // topology. The delete builder recreates the complete live rule.
+                if (chain != null) yield return chain;
             }
-            return result.ToArray();
         }
 
         private int DeleteBestEffort(Tag[] tags)
@@ -556,6 +573,7 @@ namespace NXRefine.UI
             // Re-seeding only from preview faces can therefore lose the exact
             // operation which produced the preview, especially on later runs.
             var seedPool = new HashSet<Tag>(tags.Concat(recognitionSeeds ?? new Tag[0]));
+            Tag[] seedOrder = seedPool.ToArray();
             bool progress;
             do
             {
@@ -568,18 +586,33 @@ namespace NXRefine.UI
                 {
                     SelectionScan.Checkpoint();
                     if (!DeleteBudgetAvailable()) break;
-                    ConnectedChain[] chains = BuildChainsForMode(ResolveCurrentFaces(seedPool), mode);
-                    foreach (ConnectedChain chain in chains)
-                        foreach (Face face in chain.Faces) seedPool.Add(face.Tag);
-                    foreach (ConnectedChain chain in chains.OrderByDescending(item => item.Faces.Length))
+                    Face[] liveSeeds = ResolveCurrentFaces(seedPool);
+                    var byTag = liveSeeds.ToDictionary(face => face.Tag);
+                    var orderedTags = new HashSet<Tag>(seedOrder);
+                    Face[] seeds = seedOrder.Where(byTag.ContainsKey).Select(tag => byTag[tag])
+                        .Concat(liveSeeds.Where(face => !orderedTags.Contains(face.Tag))).ToArray();
+                    // Stream complete native chains instead of spending the
+                    // entire delete budget building an all-seed list first.
+                    foreach (ConnectedChain chain in EnumerateChainsForMode(seeds, mode, true))
                     {
                         SelectionScan.Checkpoint();
                         if (!DeleteBudgetAvailable()) break;
-                        Face seed = ResolveCurrentFaces(new[] { chain.Seed }).FirstOrDefault();
+                        foreach (Face face in chain.Faces) seedPool.Add(face.Tag);
+                        Face seed;
+                        byTag.TryGetValue(chain.Seed, out seed);
                         if (seed != null && TryDeleteChainForMode(seed, mode, attemptedRegions))
                         {
                             progress = true;
-                            attemptedRegions.Clear(); // Topology changed; old failures may now heal.
+                            // Continue after this seed on the next live-topology
+                            // pass. Restarting at the first face after every
+                            // commit repeatedly spends the budget on the same
+                            // failed prefix and starves later native chains.
+                            int index = Array.FindIndex(seeds, face => face.Tag == chain.Seed);
+                            seedOrder = seeds.Skip(index + 1).Concat(seeds.Take(index + 1))
+                                .Select(face => face.Tag).ToArray();
+                            // All remaining enumerator faces refer to the old
+                            // topology. Dispose it and restart from live seeds.
+                            break;
                         }
                     }
                     if (progress) break;

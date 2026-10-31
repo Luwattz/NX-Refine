@@ -43,7 +43,7 @@ not results inferred from a successful build.
     unhandled callback exception or claiming those holes were filled. A
     Boss/Pocket expansion covering 1743 of 1745 body faces must be rejected.
 
-13. On the 958-face `test_model.prt` housing, compare inward concave edge
+13. Historical primary-pass baseline: on the 958-face `test_model.prt` housing, compare inward concave edge
     rounds with complete hole walls. At radius 4, the full-angle filter must
     retain 9 groups (three 4-face blind-hole groups and six single-face holes).
     Partial cylindrical arcs of roughly 70 to 90 degrees must not appear.
@@ -54,4 +54,69 @@ Verified in isolated NX 2512 runs: native-only recognition initially returned
 42 groups; requiring full angular spans retained 9 groups, each identical to
 its native Hole Faces result. Reports are in
 `artifacts/fill-holes-diagnosis/housing-uv.txt` and `housing-filtered.txt`.
-Split and interrupted hole walls are conservatively excluded by this check.
+Split and interrupted hole walls were conservatively excluded by this check.
+The imported-wall fallback below is now evaluated separately; the historical
+nine-group total is not an acceptance count for the combined scan.
+
+## Early seed rejection regression (2026-10-31)
+
+`FindGroups` now rejects a partial-angle seed before constructing a native
+Hole Faces rule. The original region checks remain in place. An accepted
+region must contain its seed, so this moves a necessary condition earlier
+without changing which complete native regions can qualify. Native-rule
+timings and skipped partial-seed counts are logged for large imported parts.
+
+Compare exact group face-tag sets against the baseline DLL on the 958-face
+housing and tapered/conical fixture. On rearLamp, compare the full candidate
+set to the diagnosis-only early-filter result (84 groups / 112 faces), and
+retain the small-body eight-hole healing and undo checks. Do not count every
+rejected partial arc as a missed hole: concave edge rounds must stay excluded.
+
+## Partial-success callback regression (2026-10-31)
+
+The interactive rearLamp log reported 18 filled groups / 28 faces and 3
+skipped groups, twice, followed by the partial-failure exception and dialog
+cancellation. `Apply` returned an error whenever any group failed, despite
+having committed successful groups. This prevented OK from being accepted;
+subsequent dialog cancellation could restore those provisional changes.
+The earlier independent-hole probes did not exercise this return path.
+
+`Apply` now returns success when at least one group succeeds, after rolling
+back only unsuccessful groups. If all groups fail it still returns failure.
+Failed groups' empty undo marks are deleted by ID. The selection-list cleanup
+in Reset is skipped in batch sessions, where NX SelectionManager is not
+available; interactive selection behavior is unchanged.
+
+`tests/NxFillHolesApplyRegression.cs` invokes the actual production Apply
+callback using native NX geometry. It checks a successful group, a deliberately
+stale duplicate group, then another successful group; all-success and
+all-failed actions; retention after the Cancel callback; consistency and undo.
+It explicitly models rejected-callback rollback and does not drive the
+interactive Block Styler event loop. An isolated control DLL retains only
+the old partial-error return, with the same batch guard, to reproduce the
+bad return code without calling unsupported batch SelectionManager APIs.
+
+```powershell
+.\scripts\test-nx-fill-holes-apply.ps1 -PartPath 'C:\Users\chimp\Desktop\Geometry\rearLamp.prt' -BodyTag 39237
+.\scripts\test-nx-fill-holes-apply.ps1 -PartPath 'C:\Users\chimp\Desktop\Geometry\rearLamp.prt' -BodyTag 39245 -AllReviewed
+```
+
+The first fixture needs at least two independently healable holes. The
+`-AllReviewed` case targets the original rearLamp housing and expects 18
+removed groups and 3 retained groups. Tags refer to the recorded isolated
+part loads. These tests use unsaved copies and restore outer undo marks.
+
+## Imported and split wall coverage
+
+See [housing hole coverage](HOUSING_FILL_HOLES.md) for the six-arrow model,
+face sets, geometry checks, closed-rim tolerance and negative corner-round
+cases. `diagnose-nx-cleanup.ps1 -Mode holes-scan -ProbePath` accepts an
+expectation file: a comma-separated line requires an exact group; a line
+prefixed with `!` forbids any listed face in the result. Comment lines begin
+with `#`. Assertions fail the native test run before the input is closed.
+
+The Apply regression accepts `-GroupsPath` to avoid repeating an expensive
+recognition pass when validating already recorded groups. `-ExpectedRemovedGroups`
+checks the exact healed count; an all-success cached run additionally checks
+one originally empty bore-axis point per group becomes solid. It still checks
+callback acceptance, Cancel preservation, body consistency and outer undo.

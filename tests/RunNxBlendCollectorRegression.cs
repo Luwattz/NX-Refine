@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Collections;
+using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.Serialization;
 using NXOpen;
@@ -83,7 +85,38 @@ public class RunNxBlendCollectorRegression
             }
             if (body.GetFaces().Length != 7) throw new Exception("Fallback undo failed.");
         }
-        Console.WriteLine("PASS: all four live native recognition modes, weak radius, manual exclusion, solid body, and undo. No part saved.");
+        // An exhausted delete budget must stop before another native rule,
+        // while a subsequent preview still returns the complete selection.
+        var clock = Stopwatch.StartNew();
+        type.GetField("deleteClock", flags).SetValue(dialog, clock);
+        type.GetField("deleteAttempts", flags).SetValue(dialog, 256);
+        Face restored = (Face)NXOpen.Utilities.NXObjectManager.Get(selected);
+        var enumerable = (IEnumerable)type.GetMethod("EnumerateChainsForMode", flags)
+            .Invoke(dialog, new object[] { new[] { restored }, 3, true });
+        var enumerator = enumerable.GetEnumerator();
+        try { if (enumerator.MoveNext()) throw new Exception("Recognition exceeded the delete attempt budget."); }
+        finally { ((IDisposable)enumerator).Dispose(); }
+        var preview = (Face[][])type.GetMethod("BuildConnectedGroups", flags)
+            .Invoke(dialog, new object[] { new[] { restored } });
+        if (preview.Length != 1 || preview[0].Length != 1 || preview[0][0].Tag != selected)
+            throw new Exception("An exhausted previous deletion budget truncated the preview.");
+        clock.Stop();
+        type.GetField("recognitionSeeds", flags).SetValue(dialog, new[] { selected });
+        excluded.SetValue(dialog, Activator.CreateInstance(excluded.FieldType, new object[] { new[] { selected } }));
+        var bestEffort = type.GetMethod("DeleteBestEffort", flags);
+        if ((int)bestEffort.Invoke(dialog, new object[] { new[] { selected } }) != 0 || body.GetFaces().Length != 7)
+            throw new Exception("Streamed deletion ignored manual exclusion.");
+        excluded.SetValue(dialog, Activator.CreateInstance(excluded.FieldType));
+        mark = session.SetUndoMark(Session.MarkVisibility.Invisible, "streamed delete regression");
+        try
+        {
+            if ((int)bestEffort.Invoke(dialog, new object[] { new[] { selected } }) != 1 ||
+                body.GetFaces().Length != 6 || !body.IsSolidBody)
+                throw new Exception("Streamed native deletion failed to remove the synthetic blend.");
+        }
+        finally { session.UndoToMark(mark, null); session.DeleteUndoMark(mark, null); }
+        if (body.GetFaces().Length != 7) throw new Exception("Streamed deletion undo failed.");
+        Console.WriteLine("PASS: all four live native recognition modes, weak radius, manual exclusion, streamed deletion, recognition budget, complete preview after budget, solid body, and undo. No part saved.");
     }
 }
 

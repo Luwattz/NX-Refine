@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -274,14 +275,31 @@ namespace NXRefine.UI
             var result = new List<Face[]>();
             var seen = new HashSet<Tag>();
             int nonInnerSeeds = 0;
+            int partialSeeds = 0;
+            int nativeCalls = 0;
+            var scanClock = Stopwatch.StartNew();
             foreach (Face face in allFaces)
             {
                 SelectionScan.Checkpoint();
                 if (seen.Contains(face.Tag) || !IsHoleWallType(face)) continue;
 
+                // Every accepted native region must contain this seed and
+                // every analytic member must pass the same angular check
+                // below. Reject an ineligible seed before the expensive rule;
+                // do not relax the reviewed region or infer split hole walls.
+                if (!HasFullAngularSpan(face))
+                {
+                    partialSeeds++;
+                    continue;
+                }
+                HoleSeed eligible;
+                if(!TryGetInnerRevolvedFace(face,body,out eligible)) { nonInnerSeeds++; continue; }
+                if(maximumRadius>0 && eligible.Radius>maximumRadius)continue;
+
                 // This is the same native Hole Faces selection intent exposed
-                // by NX's Delete Face command. It recognizes the hole first;
-                // the geometric checks below are only safety/radius filters.
+                // by NX's Delete Face command. It defines the deletion region;
+                // the geometric checks are only safety/radius filters.
+                nativeCalls++;
                 Face[] holeFaces = FindNativeHoleFaces(face);
                 // Never accept a rule that escaped the selected body. NX's
                 // hole rule is the authority for which faces form the hole.
@@ -311,7 +329,8 @@ namespace NXRefine.UI
                     SelectionScan.Checkpoint();
                     double radius = GetRevolvedMaximumRadius(item);
                     HoleSeed inner;
-                    if (!HasFullAngularSpan(item) || radius <= 0.0 || (maximumRadius > 0.0 && radius > maximumRadius) ||
+                    bool closed = HasFullAngularSpan(item);
+                    if (!closed || radius <= 0.0 || (maximumRadius > 0.0 && radius > maximumRadius) ||
                         !TryGetInnerRevolvedFace(item, body, out inner) || !IsCoaxial(seed, inner))
                     {
                         valid = false;
@@ -335,9 +354,21 @@ namespace NXRefine.UI
                 result.Add(group);
                 foreach (Face item in group) seen.Add(item.Tag);
             }
-            context.Log("Fill Holes: " + result.Count + " native hole groups in body " + body.Tag +
-                "; rejected " +
-                nonInnerSeeds + " exterior cylindrical/conical seeds.");
+            foreach(Face[] recovered in FindCompositeHoleGroups(allFaces,body,maximumRadius))
+            {
+                var merged=recovered.ToDictionary(face=>face.Tag);
+                for(int i=result.Count-1;i>=0;i--)
+                {
+                    if(!result[i].Any(face=>merged.ContainsKey(face.Tag))) continue;
+                    foreach(Face face in result[i]) merged[face.Tag]=face;
+                    result.RemoveAt(i); i=result.Count;
+                }
+                result.Add(merged.Values.ToArray());
+            }
+            context.Log("Fill Holes: " + result.Count + " reviewed hole groups in body " + body.Tag +
+                "; rejected " + nonInnerSeeds + " regions without an inner seed; skipped " +
+                partialSeeds + " partial-angle seeds before recognition; " + nativeCalls +
+                " primary native rules, " + scanClock.ElapsedMilliseconds + " ms.");
             return result.ToArray();
         }
 
@@ -358,6 +389,7 @@ namespace NXRefine.UI
             // NX 2512 dereferences this parameter in CreateRuleFaceHole:
             // passing null raises an internal memory-access NXException.
             SelectionIntentRuleOptions options = context.WorkPart.ScRuleFactory.CreateRuleOptions();
+            var clock = Stopwatch.StartNew();
             try
             {
                 FaceHoleFacesRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceHole(seed, options);
@@ -373,6 +405,9 @@ namespace NXRefine.UI
             finally
             {
                 collector.Destroy();
+                if (clock.ElapsedMilliseconds >= 1000)
+                    context.Log("Fill Holes slow native recognition: seed=" + seed.Tag +
+                        ", " + clock.ElapsedMilliseconds + " ms.");
             }
         }
 
@@ -449,25 +484,337 @@ namespace NXRefine.UI
 
                 double axisLength = Math.Sqrt(axisDirection.Sum(value => value * value));
                 if (axisLength < 1e-12 || double.IsNaN(radiusData) || double.IsInfinity(radiusData)) return 0.0;
-                double maxStation = 0.0;
-                for (int mask = 0; mask < 8; mask++)
+                double[] uv = new double[4];
+                context.UF.Modl.AskFaceUvMinmax(face.Tag, uv);
+                double maximum = 0.0;
+                // Cone radius depends only on its axial parameter. Evaluate
+                // the trimmed V extremes on the actual surface; projecting a
+                // world-axis box overestimates tilted entrance chamfers.
+                foreach (double v in new[] { uv[2], uv[3] })
                 {
-                    SelectionScan.Checkpoint();
-                    double station = 0.0;
-                    for (int i = 0; i < 3; i++)
-                    {
-                        SelectionScan.Checkpoint();
-                        double coordinate = box[((mask >> i) & 1) == 0 ? i : i + 3];
-                        station += (coordinate - axisPoint[i]) * axisDirection[i] / axisLength;
-                    }
-                    maxStation = Math.Max(maxStation, Math.Abs(station));
+                    double[] p = SurfacePoint(face, (uv[0] + uv[1]) * 0.5, v);
+                    double along = 0.0, distance = 0.0;
+                    for (int i = 0; i < 3; i++) { double d=p[i]-axisPoint[i]; along+=d*axisDirection[i]/axisLength; distance+=d*d; }
+                    maximum = Math.Max(maximum, Math.Sqrt(Math.Max(0.0, distance-along*along)));
                 }
-                double maximum = radius + Math.Abs(Math.Tan(radiusData)) * maxStation;
                 return maximum > 0.0 && !double.IsNaN(maximum) && !double.IsInfinity(maximum)
                     ? maximum : 0.0;
             }
             catch (NXException) { return 0.0; }
         }
+
+        private double[] SurfacePoint(Face face, double u, double v)
+        {
+            double[] point = new double[3];
+            context.UF.Modl.AskFaceProps(face.Tag, new[] { u, v }, point, new double[3], new double[3],
+                new double[3], new double[3], new double[3], new double[2]);
+            return point;
+        }
+
+        private bool HasWindingRims(Edge[] boundary, HoleSeed seed, bool constantRadius = true, int minimumLoops = 2, int maximumLoops = 2)
+        {
+            if(boundary.Length==0) return false;
+            double tolerance=1e-5*Math.Max(1,seed.Radius);
+            double partTolerance;
+            context.UF.Modl.AskDistanceToleranceOfPart(context.WorkPart.Tag,out partTolerance);
+            // Imported edge curves may end slightly away from their common
+            // topological vertex. Use the part tolerance only to join them;
+            // keep the radius bound independent of this stitching allowance.
+            double joinTolerance=Math.Max(tolerance,Math.Min(0.01,partTolerance));
+            double length=Math.Sqrt(seed.Axis.Sum(x=>x*x));
+            var axis=seed.Axis.Select(x=>x/length).ToArray();
+            double[] helper=Math.Abs(axis[2])<0.9?new[]{0.0,0.0,1.0}:new[]{1.0,0.0,0.0};
+            double[] xAxis={axis[1]*helper[2]-axis[2]*helper[1],axis[2]*helper[0]-axis[0]*helper[2],axis[0]*helper[1]-axis[1]*helper[0]};
+            double xLength=Math.Sqrt(xAxis.Sum(x=>x*x)); for(int i=0;i<3;i++) xAxis[i]/=xLength;
+            double[] yAxis={axis[1]*xAxis[2]-axis[2]*xAxis[1],axis[2]*xAxis[0]-axis[0]*xAxis[2],axis[0]*xAxis[1]-axis[1]*xAxis[0]};
+            var curves=new List<double[][]>();
+            foreach(Edge edge in boundary)
+            {
+                SelectionScan.Checkpoint();
+                IntPtr evaluator=IntPtr.Zero;
+                try
+                {
+                    context.UF.Eval.Initialize(edge.Tag,out evaluator);
+                    double[] limits=new double[2]; context.UF.Eval.AskLimits(evaluator,limits);
+                    var points=new List<double[]>();
+                    for(int k=0;k<=32;k++)
+                    {
+                        var p=new double[3]; context.UF.Eval.Evaluate(evaluator,0,limits[0]+(limits[1]-limits[0])*k/32.0,p,new double[3]);
+                        points.Add(p);
+                    }
+                    curves.Add(points.ToArray());
+                }
+                catch(NXException){return false;}
+                finally {if(evaluator!=IntPtr.Zero) context.UF.Eval.Free(evaluator);}
+            }
+            int loops=0;
+            while(curves.Count>0)
+            {
+                var path=new List<double[]>(curves[0]); curves.RemoveAt(0);
+                while(DistanceSquared(path[0],path[path.Count-1])>joinTolerance*joinTolerance)
+                {
+                    var matches=curves.Select((samples,index)=>new{points=samples,index})
+                        .Where(item=>DistanceSquared(path[path.Count-1],item.points[0])<=joinTolerance*joinTolerance ||
+                            DistanceSquared(path[path.Count-1],item.points[item.points.Length-1])<=joinTolerance*joinTolerance).ToArray();
+                    if(matches.Length!=1) return false;
+                    var match=matches[0]; var points=match.points;
+                    if(DistanceSquared(path[path.Count-1],points[0])>joinTolerance*joinTolerance) points=points.Reverse().ToArray();
+                    path.AddRange(points.Skip(1)); curves.RemoveAt(match.index);
+                }
+                path.Add(path[0]);
+                double winding=0, previous=0; bool first=true;
+                foreach(double[] p in path)
+                {
+                    double x=0,y=0;
+                    for(int i=0;i<3;i++){x+=(p[i]-seed.AxisPoint[i])*xAxis[i]; y+=(p[i]-seed.AxisPoint[i])*yAxis[i];}
+                    double radial=Math.Sqrt(x*x+y*y);
+                    if(constantRadius ? Math.Abs(radial-seed.Radius)>tolerance*10 : radial>seed.Radius+tolerance*10 || radial<tolerance) return false;
+                    double angle=Math.Atan2(y,x);
+                    if(!first){double delta=angle-previous; while(delta>Math.PI)delta-=2*Math.PI; while(delta< -Math.PI)delta+=2*Math.PI;
+                        if(Math.Abs(delta)>Math.PI/2) return false; winding+=delta;}
+                    first=false; previous=angle;
+                }
+                if(Math.Abs(Math.Abs(winding)-2*Math.PI)>1e-3 || ++loops>maximumLoops) return false;
+            }
+            return loops>=minimumLoops && loops<=maximumLoops;
+        }
+
+        private Face[][] FindCompositeHoleGroups(Face[] allFaces, Body body, double maximumRadius)
+        {
+            var result=new List<Face[]>();
+            var processed=new HashSet<Tag>();
+            var curves=new Dictionary<Tag,double[][]>();
+            var nativeCache=new Dictionary<Tag,Face[]>();
+            var cachedPoints=new Dictionary<Tag,double[]>();
+            var cachedNormals=new Dictionary<Tag,double[]>();
+            var invalidNormals=new HashSet<Tag>();
+            double tolerance; context.UF.Modl.AskDistanceToleranceOfPart(context.WorkPart.Tag,out tolerance);
+            tolerance=Math.Max(1e-5,Math.Min(tolerance,0.01));
+            var seeds=new List<HoleSeed>();
+            foreach(Face face in allFaces)
+            {
+                SelectionScan.Checkpoint();
+                HoleSeed seed;
+                if(face.SolidFaceType==Face.FaceType.Planar)
+                {
+                    var bounds=new double[6];context.UF.Modl.AskBoundingBox(face.Tag,bounds);
+                    if(maximumRadius>0 && Enumerable.Range(0,3).Sum(i=>Math.Pow(bounds[i+3]-bounds[i],2))>12*maximumRadius*maximumRadius)continue;
+                    if(TryGetCircularFloor(face,tolerance,curves,out seed)) seeds.Add(seed);
+                }
+                else if(face.SolidFaceType==Face.FaceType.Cylindrical && !HasFullAngularSpan(face) && TryGetInnerRevolvedFace(face,body,out seed)) seeds.Add(seed);
+                else if(!IsHoleWallType(face) && face.SolidFaceType!=Face.FaceType.Spherical && face.GetEdges().Length<=8 &&
+                    TryFitInnerRevolvedWall(face,body,tolerance,maximumRadius,out seed)) seeds.Add(seed);
+            }
+            double[] bodyBox=new double[6]; context.UF.Modl.AskBoundingBox(body.Tag,bodyBox);
+            double bodyLimit=Math.Sqrt(Enumerable.Range(0,3).Sum(i=>Math.Pow(bodyBox[i+3]-bodyBox[i],2)));
+            var fittedWalls=seeds.Where(s=>s.Face.SolidFaceType!=Face.FaceType.Planar).ToDictionary(s=>s.Face.Tag);
+            foreach(HoleSeed seed in seeds)
+            {
+                Face face=seed.Face;
+                if(processed.Contains(face.Tag) || (maximumRadius>0 && seed.Radius>maximumRadius)) continue;
+                // Limit fallback growth around the observed bore, rather than
+                // letting a tiny corner fillet absorb a whole nearby pocket.
+                // Larger analytic counterbores remain handled by NX above.
+                double searchLimit=Math.Min(maximumRadius>0?maximumRadius:bodyLimit,2*seed.Radius+tolerance);
+                var walls=new Dictionary<Tag,Face>{{face.Tag,face}};
+                var queue=new Queue<Face>(); queue.Enqueue(face);
+                while(queue.Count>0 && walls.Count<=128)
+                {
+                    foreach(Face neighbor in queue.Dequeue().GetEdges().SelectMany(e=>e.GetFaces()))
+                    {
+                        if(walls.ContainsKey(neighbor.Tag)) continue;
+                        HoleSeed fittedNeighbor;
+                        if(fittedWalls.TryGetValue(neighbor.Tag,out fittedNeighbor) && !IsCoaxial(seed,fittedNeighbor,tolerance))continue;
+                        double[] point,normal;
+                        if(invalidNormals.Contains(neighbor.Tag))continue;
+                        if(!cachedPoints.TryGetValue(neighbor.Tag,out point))
+                        {
+                            if(!TryGetFacePointNormal(neighbor,out point,out normal)){invalidNormals.Add(neighbor.Tag);continue;}
+                            cachedPoints[neighbor.Tag]=point;cachedNormals[neighbor.Tag]=normal;
+                        }
+                        normal=cachedNormals[neighbor.Tag];
+                        if(neighbor.SolidFaceType==Face.FaceType.Planar && Math.Abs(normal.Select((x,i)=>x*seed.Axis[i]).Sum())>
+                            0.5*Math.Sqrt(normal.Sum(x=>x*x)*seed.Axis.Sum(x=>x*x)) &&
+                            WithinCylinder(neighbor,seed,searchLimit+tolerance,curves) &&
+                            HasWindingRims(RegionBoundary(new[]{neighbor}),new HoleSeed(face,seed.AxisPoint,seed.Axis,searchLimit+tolerance),false,1,1))continue;
+                        double along=0,length=seed.Axis.Sum(x=>x*x); var radial=new double[3];
+                        for(int i=0;i<3;i++) along+=(point[i]-seed.AxisPoint[i])*seed.Axis[i]/length;
+                        for(int i=0;i<3;i++) radial[i]=point[i]-seed.AxisPoint[i]-along*seed.Axis[i];
+                        if(radial.Select((x,i)=>-x*normal[i]).Sum()<=1e-7 || Math.Sqrt(radial.Sum(x=>x*x))>searchLimit+tolerance) continue;
+                        if(!WithinCylinder(neighbor,seed,searchLimit+tolerance,curves)) continue;
+                        walls[neighbor.Tag]=neighbor; queue.Enqueue(neighbor);
+                    }
+                }
+                if(walls.Count<2 || walls.Count>128) continue;
+                var guide=new HoleSeed(face,seed.AxisPoint,seed.Axis,searchLimit+tolerance);
+                if(!HasWindingRims(RegionBoundary(walls.Values.ToArray()),guide,false,face.SolidFaceType==Face.FaceType.Planar?1:2))
+                {
+                    if(allFaces.Length<100)context.Log("Fill Holes rejected open guide: seed="+face.Tag+"; walls="+string.Join(",",walls.Keys));
+                    continue;
+                }
+                // Oblique blind-hole disks are bounded by a proven wall rim;
+                // annular carrier faces have additional edges and are rejected.
+                var rimTags=new HashSet<Tag>(RegionBoundary(walls.Values.ToArray()).Select(e=>e.Tag));
+                foreach(Face cap in walls.Values.SelectMany(f=>f.GetEdges()).SelectMany(e=>e.GetFaces())
+                    .Where(f=>f.SolidFaceType==Face.FaceType.Planar && !walls.ContainsKey(f.Tag)).GroupBy(f=>f.Tag).Select(g=>g.First()).ToArray())
+                {
+                    Edge[] capEdges=cap.GetEdges();
+                    if(capEdges.Length==0 || capEdges.Any(e=>!rimTags.Contains(e.Tag)))continue;
+                    if(!WithinCylinder(cap,seed,searchLimit+tolerance,curves) || !HasWindingRims(RegionBoundary(new[]{cap}),guide,false,1,1))continue;
+                    walls[cap.Tag]=cap;
+                }
+                context.Log("Fill Holes composite guide: seed="+face.Tag+"; walls="+string.Join(",",walls.Keys));
+                // The closed wall region is established geometrically above.
+                // Ask NX once for additional members: imported spline walls
+                // often return only the seed, so querying every wall repeats
+                // the expensive whole-body recognition without new evidence.
+                Face[] recognized;
+                if(!nativeCache.TryGetValue(face.Tag,out recognized))
+                {recognized=FindNativeHoleFaces(face);nativeCache[face.Tag]=recognized;}
+                if(!recognized.Any(f=>f.Tag==face.Tag))continue;
+                Face[] native=walls.Values.Concat(recognized).GroupBy(f=>f.Tag).Select(g=>g.First()).ToArray();
+                var nativeTags=new HashSet<Tag>(native.Select(f=>f.Tag));
+                if(IsUnsafeExpansion(native.Length,body.GetFaces().Length) || native.Any(f=>f.GetBody().Tag!=body.Tag) || walls.Keys.Any(tag=>!nativeTags.Contains(tag))) continue;
+                double limit=searchLimit;
+                if(native.Any(f=>!WithinCylinder(f,seed,limit,curves))) continue;
+                if(native.Where(IsHoleWallType).Any(f=>{HoleSeed inner; return !TryGetInnerRevolvedFace(f,body,out inner)||!IsCoaxial(seed,inner)||GetRevolvedMaximumRadius(f)>limit;})) continue;
+                var regionSeed=new HoleSeed(face,seed.AxisPoint,seed.Axis,limit);
+                if(!HasWindingRims(RegionBoundary(native),regionSeed,false,1)) continue;
+                foreach(Tag tag in nativeTags)processed.Add(tag);
+                result.Add(native);
+                context.Log("Fill Holes composite hole: radius="+seed.Radius+"; faces="+string.Join(",",native.Select(f=>f.Tag)));
+            }
+            return result.ToArray();
+        }
+
+        private bool TryGetCircularFloor(Face face,double tolerance,Dictionary<Tag,double[][]> curves,out HoleSeed seed)
+        {
+            seed=null;
+            int type,direction;double radius,data;var origin=new double[3];var axis=new double[3];
+            context.UF.Modl.AskFaceData(face.Tag,out type,origin,axis,new double[6],out radius,out data,out direction);
+            var provisional=new HoleSeed(face,origin,axis,1);
+            if(!WithinCylinder(face,provisional,double.MaxValue,curves))return false;
+            double[][] samples=face.GetEdges().SelectMany(edge=>curves[edge.Tag]).ToArray();
+            if(samples.Length<3)return false;
+            double[] a=samples[0];double[] b=samples.OrderByDescending(p=>DistanceSquared(p,a)).First();
+            double[] ab=b.Select((x,i)=>x-a[i]).ToArray();double abLength=Math.Sqrt(ab.Sum(x=>x*x));if(abLength<1e-6)return false;
+            var xAxis=ab.Select(x=>x/abLength).ToArray();double axisLength=Math.Sqrt(axis.Sum(x=>x*x));if(axisLength<1e-9)return false;
+            axis=axis.Select(x=>x/axisLength).ToArray();
+            double[] yAxis={axis[1]*xAxis[2]-axis[2]*xAxis[1],axis[2]*xAxis[0]-axis[0]*xAxis[2],axis[0]*xAxis[1]-axis[1]*xAxis[0]};
+            double[] c=samples.OrderByDescending(p=>Math.Abs(Enumerable.Range(0,3).Sum(i=>(p[i]-a[i])*yAxis[i]))).First();
+            double bx=abLength,cx=Enumerable.Range(0,3).Sum(i=>(c[i]-a[i])*xAxis[i]),cy=Enumerable.Range(0,3).Sum(i=>(c[i]-a[i])*yAxis[i]);
+            if(Math.Abs(cy)<1e-6)return false;
+            double centerX=bx/2,centerY=(cx*cx+cy*cy-bx*cx)/(2*cy);
+            var center=Enumerable.Range(0,3).Select(i=>a[i]+centerX*xAxis[i]+centerY*yAxis[i]).ToArray();
+            double fitted=Math.Sqrt(centerX*centerX+centerY*centerY);
+            if(fitted<=tolerance || samples.Any(p=>Math.Abs(Math.Sqrt(DistanceSquared(p,center))-fitted)>tolerance))return false;
+            var candidate=new HoleSeed(face,center,axis,fitted+tolerance);
+            if(!HasWindingRims(RegionBoundary(new[]{face}),candidate,false,1))return false;
+            seed=new HoleSeed(face,center,axis,fitted);return true;
+        }
+
+        private bool TryFitInnerRevolvedWall(Face face,Body body,double tolerance,double maximumRadius,out HoleSeed seed)
+        {
+            try{return TryFitInnerRevolvedWallCore(face,body,tolerance,maximumRadius,out seed);}
+            catch(NXException){seed=null;return false;}
+        }
+
+        private bool TryFitInnerRevolvedWallCore(Face face,Body body,double tolerance,double maximumRadius,out HoleSeed seed)
+        {
+            seed=null;
+            var uv=new double[4]; context.UF.Modl.AskFaceUvMinmax(face.Tag,uv);
+            foreach(bool swapped in new[]{false,true})
+            {
+                var points=new double[21][];var normals=new double[21][];
+                foreach(int k in new[]{1,3,5})
+                {
+                    int index=7+k; points[index]=new double[3];normals[index]=new double[3];
+                    double fu=swapped?0.5:k/6.0,fv=swapped?k/6.0:0.5;
+                    context.UF.Modl.AskFaceProps(face.Tag,new[]{uv[0]+fu*(uv[1]-uv[0]),uv[2]+fv*(uv[3]-uv[2])},points[index],new double[3],new double[3],new double[3],new double[3],normals[index],new double[2]);
+                }
+                double[] a=normals[8].Select((x,i)=>x-normals[10][i]).ToArray(),b=normals[12].Select((x,i)=>x-normals[10][i]).ToArray();
+                double[] axis={a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};
+                double axisLength=Math.Sqrt(axis.Sum(x=>x*x));if(double.IsNaN(axisLength)||double.IsInfinity(axisLength)||axisLength<1e-6)continue;axis=axis.Select(x=>x/axisLength).ToArray();
+                var origin=points[8];var delta=points[10].Select((x,i)=>x-origin[i]).ToArray();double along=delta.Select((x,i)=>x*axis[i]).Sum();
+                var xAxis=delta.Select((x,i)=>x-along*axis[i]).ToArray();double xLength=Math.Sqrt(xAxis.Sum(x=>x*x));if(xLength<1e-6)continue;xAxis=xAxis.Select(x=>x/xLength).ToArray();
+                double[] yAxis={axis[1]*xAxis[2]-axis[2]*xAxis[1],axis[2]*xAxis[0]-axis[0]*xAxis[2],axis[0]*xAxis[1]-axis[1]*xAxis[0]};
+                double cx=Enumerable.Range(0,3).Sum(i=>(points[12][i]-origin[i])*xAxis[i]),cy=Enumerable.Range(0,3).Sum(i=>(points[12][i]-origin[i])*yAxis[i]);
+                if(Math.Abs(cy)<1e-6)continue;
+                double centerX=xLength/2,centerY=(cx*cx+cy*cy-xLength*cx)/(2*cy);
+                var center=Enumerable.Range(0,3).Select(i=>origin[i]+centerX*xAxis[i]+centerY*yAxis[i]).ToArray();
+                double estimate=Math.Sqrt(centerX*centerX+centerY*centerY);
+                if(double.IsNaN(estimate)||double.IsInfinity(estimate)||(maximumRadius>0 && estimate>maximumRadius+tolerance))continue;
+                for(int j=0;j<3;j++)for(int k=0;k<7;k++)
+                {
+                    int index=j*7+k;if(points[index]!=null)continue;
+                    points[index]=new double[3];normals[index]=new double[3];
+                    double fu=swapped?j/2.0:k/6.0,fv=swapped?k/6.0:j/2.0;
+                    context.UF.Modl.AskFaceProps(face.Tag,new[]{uv[0]+fu*(uv[1]-uv[0]),uv[2]+fv*(uv[3]-uv[2])},points[index],new double[3],new double[3],new double[3],new double[3],normals[index],new double[2]);
+                }
+                if(points.SelectMany(p=>p).Concat(normals.SelectMany(n=>n)).Any(x=>double.IsNaN(x)||double.IsInfinity(x)))continue;
+                var stations=new double[21];var radii=new double[21];bool inward=true;
+                for(int k=0;k<21;k++)
+                {
+                    var displacement=points[k].Select((x,i)=>x-center[i]).ToArray();stations[k]=displacement.Select((x,i)=>x*axis[i]).Sum();
+                    var radial=displacement.Select((x,i)=>x-stations[k]*axis[i]).ToArray();radii[k]=Math.Sqrt(radial.Sum(x=>x*x));
+                    double normalLength=Math.Sqrt(normals[k].Sum(x=>x*x));
+                    if(radii[k]<1e-6 || normalLength<1e-9 || radial.Select((x,i)=>-x*normals[k][i]).Sum()<0.5*radii[k]*normalLength)inward=false;
+                }
+                if(!inward)continue;
+                double stationMean=stations.Average(),radiusMean=radii.Average(),variance=stations.Sum(x=>(x-stationMean)*(x-stationMean));
+                if(variance<1e-12)continue;
+                double slope=Enumerable.Range(0,21).Sum(k=>(stations[k]-stationMean)*(radii[k]-radiusMean))/variance;
+                if(Enumerable.Range(0,21).Any(k=>Math.Abs(radii[k]-radiusMean-slope*(stations[k]-stationMean))>tolerance))continue;
+                double radius=radii.Max();if(maximumRadius>0 && radius>maximumRadius)continue;
+                var stationPoint=center.Select((x,i)=>x+stationMean*axis[i]).ToArray();int containment;
+                context.UF.Modl.AskPointContainment(stationPoint,body.Tag,out containment);if(containment==1)continue;
+                seed=new HoleSeed(face,center,axis,radius);
+                return true;
+            }
+            return false;
+        }
+
+        private Edge[] RegionBoundary(Face[] faces)
+        {
+            var tags=new HashSet<Tag>(faces.Select(face=>face.Tag));
+            return faces.SelectMany(f=>f.GetEdges()).GroupBy(e=>e.Tag).Select(g=>g.First())
+                // A periodic face's seam can report a single adjacent face.
+                // It is internal, not a rim: a region boundary needs a face
+                // outside the region on the other side of the edge.
+                .Where(e=>e.GetFaces().Any(f=>!tags.Contains(f.Tag))).ToArray();
+        }
+
+        private bool WithinCylinder(Face face,HoleSeed seed,double maximum,Dictionary<Tag,double[][]> cache)
+        {
+            double axisLength=seed.Axis.Sum(x=>x*x);
+            foreach(Edge edge in face.GetEdges())
+            {
+                double[][] points;
+                if(!cache.TryGetValue(edge.Tag,out points))
+                {
+                    IntPtr evaluator=IntPtr.Zero;
+                    try
+                    {
+                        context.UF.Eval.Initialize(edge.Tag,out evaluator); var limits=new double[2]; context.UF.Eval.AskLimits(evaluator,limits);
+                        points=new double[17][];
+                        for(int k=0;k<points.Length;k++){points[k]=new double[3]; context.UF.Eval.Evaluate(evaluator,0,limits[0]+(limits[1]-limits[0])*k/16.0,points[k],new double[3]);}
+                        cache[edge.Tag]=points;
+                    }
+                    catch(NXException){return false;}
+                    finally{if(evaluator!=IntPtr.Zero)context.UF.Eval.Free(evaluator);}
+                }
+                foreach(double[] p in points)
+                {
+                    double along=0,distance=0;
+                    for(int i=0;i<3;i++){double d=p[i]-seed.AxisPoint[i];along+=d*seed.Axis[i]/Math.Sqrt(axisLength);distance+=d*d;}
+                    if(Math.Sqrt(Math.Max(0,distance-along*along))>maximum+1e-5) return false;
+                }
+            }
+            return true;
+        }
+
+        private static double DistanceSquared(double[] a,double[] b)
+        {return Enumerable.Range(0,3).Sum(i=>(a[i]-b[i])*(a[i]-b[i]));}
 
         private bool TryGetInnerRevolvedFace(Face face, Body body, out HoleSeed seed)
         {
@@ -544,7 +891,7 @@ namespace NXRefine.UI
             catch (NXException) { return false; }
         }
 
-        private static bool IsCoaxial(HoleSeed first, HoleSeed second)
+        private static bool IsCoaxial(HoleSeed first, HoleSeed second, double fittingTolerance = 0.0)
         {
             double firstLength = Math.Sqrt(first.Axis.Sum(value => value * value));
             double secondLength = Math.Sqrt(second.Axis.Sum(value => value * value));
@@ -559,7 +906,7 @@ namespace NXRefine.UI
                 along += delta * first.Axis[i] / firstLength;
                 distanceSquared += delta * delta;
             }
-            double tolerance = 1e-5 * Math.Max(1.0, Math.Max(first.Radius, second.Radius));
+            double tolerance = Math.Max(fittingTolerance,1e-5 * Math.Max(1.0, Math.Max(first.Radius, second.Radius)));
             return Math.Abs(dot) >= 1.0 - 1e-8 &&
                 Math.Max(0.0, distanceSquared - along * along) <= tolerance * tolerance;
         }
@@ -668,7 +1015,8 @@ namespace NXRefine.UI
             {
                 if (bodySelect != null) bodySelect.SetSelectedObjects(new TaggedObject[0]);
                 if (faceSelect != null) faceSelect.SetSelectedObjects(new TaggedObject[0]);
-                context.UI.SelectionManager.ClearGlobalSelectionList();
+                // SelectionManager is unavailable in an NX batch session.
+                if (!context.Session.IsBatch) context.UI.SelectionManager.ClearGlobalSelectionList();
                 ClearPreview();
                 bodies.Clear();
                 groups.Clear();
@@ -738,14 +1086,21 @@ namespace NXRefine.UI
                     {
                         failed++;
                         context.Log("Fill Holes skipped group " + failed + ": " + failure);
-                        try { context.Session.UndoToMark(mark, "NX Refine - Fill Hole"); }
+                        try
+                        {
+                            context.Session.UndoToMark(mark, null);
+                            context.Session.DeleteUndoMark(mark, null);
+                        }
                         catch (Exception ex) { context.Log("Fill Holes rollback failed: " + ex); return Error(ex); }
                     }
                 }
                 context.Log("Fill Holes: filled " + succeeded + " groups (" + filledFaces +
                     " faces), skipped " + failed + " groups.");
-                if (failed > 0) return Error(new InvalidOperationException(
-                    "部分孔无法由剩余面闭合：已填充 " + succeeded + " 个，跳过 " + failed + " 个。详情见 NX 日志。"));
+                // Block Styler must accept the callback when any group was
+                // committed. Returning an error for a partial success leaves
+                // OK unaccepted and lets dialog cancellation undo those heals.
+                // Failed groups were already rolled back independently above;
+                // their count is diagnostic, not a failure of the whole action.
                 return succeeded > 0 ? 0 : 1;
             }
             catch (Exception ex) { return Error(ex); }
@@ -791,6 +1146,15 @@ namespace NXRefine.UI
                     .Where(face => requested.Contains(face.Tag)).ToArray();
                 if (currentFaces.Length != requested.Count)
                     throw new InvalidOperationException("The reviewed hole faces are no longer present.");
+                Body[] sourceBodies=currentFaces.Select(face=>face.GetBody()).GroupBy(body=>body.Tag).Select(group=>group.First()).ToArray();
+                int bodyCount=context.WorkPart.Bodies.ToArray().Length;
+                var originalFaults=new Dictionary<Tag,int>();
+                foreach(Body body in sourceBodies)
+                {
+                    int count;int[] faults;Tag[] objects;
+                    context.UF.Modl.AskBodyConsistency(body.Tag,out count,out faults,out objects);
+                    originalFaults[body.Tag]=count;
+                }
                 builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
                 builder.Type = type;
                 builder.Heal = true;
@@ -798,6 +1162,16 @@ namespace NXRefine.UI
                 FaceDumbRule rule = context.WorkPart.ScRuleFactory.CreateRuleFaceDumb(currentFaces);
                 builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
                 builder.CommitFeature();
+                if(context.WorkPart.Bodies.ToArray().Length!=bodyCount || context.WorkPart.Bodies.ToArray()
+                    .SelectMany(body=>body.GetFaces()).Any(face=>requested.Contains(face.Tag)))
+                    throw new InvalidOperationException("Healing did not preserve bodies and remove the complete reviewed hole group.");
+                foreach(Body body in sourceBodies)
+                {
+                    int count;int[] faults;Tag[] objects;
+                    context.UF.Modl.AskBodyConsistency(body.Tag,out count,out faults,out objects);
+                    if(!body.IsSolidBody || count>originalFaults[body.Tag])
+                        throw new InvalidOperationException("Hole healing introduced solid-body consistency errors.");
+                }
                 committed = true;
                 return true;
             }

@@ -1,0 +1,10 @@
+# housing.prt SHA256 ED737FAFEB2784064DCEA3527FB210010BD36561C52E85422CB3E3C7F943A816
+# Exact groups corresponding to the six arrows; tags apply to this model load.
+39115,39973,40689,41969,43993
+39267,43183,43393,44280,45006
+40722,40786,40979,42027,42572
+42544,43123,44333,44855,45142
+40062,42880
+43407,43733
+# Rejected small fillet seeds from a noncoaxial pocket and isolated concave arcs.
+!40201,43677,42998,44180,41505,44106
