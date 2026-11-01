@@ -56,6 +56,8 @@ public static class NxCleanupDiagnosis
         report.WriteLine("OPEN_MS=" + clock.ElapsedMilliseconds + " UNITS=" + part.PartUnits);
         report.WriteLine("SYSLOG=" + session.LogFile.FileName);
         report.WriteLine("MODE=" + args[3] + " BODY_FILTER=" + (args.Length > 4 ? args[4] : "all"));
+        if (args[3].StartsWith("blends-continuous") && args.Length < 8)
+            throw new ArgumentException("Continuous diagnosis requires a stop duration before starting preview.");
         plugin = Assembly.LoadFrom(Path.GetFullPath(args[1]));
         context = plugin.GetType("NXRefine.Core.NxContext").GetProperty("Current").GetValue(null, null);
         var original = new HashSet<Tag>(Faces(part).Select(f => f.Tag));
@@ -73,7 +75,214 @@ public static class NxCleanupDiagnosis
                     " OCCURRENCE=" + body.IsOccurrence + " FACES=" + faces.Length + " TYPES=" +
                     string.Join(",", faces.GroupBy(f => f.SolidFaceType).Select(g => g.Key + ":" + g.Count())));
             }
-            if(args[3]=="hole-target-recovery")
+            if(args[3]=="blend-preview-compare" || args[3]=="blend-preview-union-compare" || args[3]=="blend-preview-components-compare")
+            {
+                object baseline = Create("RemoveBlendsDialog");
+                Face[] seeds = Faces(part).Where(face => Include(face.GetBody(), args)).Where(face => {
+                    object[] values = { face, 0.0, false };
+                    return (bool)Call(baseline, "TryGetBlend", values) && (bool)values[2] && (double)values[1] <= 3.0;
+                }).OrderBy(face => face.Tag).ToArray();
+                int count = Math.Min(int.Parse(args[5]), seeds.Length);
+                bool components = args[3]=="blend-preview-components-compare";
+                bool unionOnly = args[3]=="blend-preview-union-compare" || components;
+                Face[] sample = args[3]=="blend-preview-union-compare" ? seeds.Take(count).ToArray() :
+                    Enumerable.Range(0, count).Select(i => seeds[(int)((long)i * seeds.Length / count)]).ToArray();
+                clock.Restart();
+                Face[][] expected = (Face[][])Call(baseline, "BuildConnectedGroups", new object[] { sample });
+                report.WriteLine("BASELINE_PREVIEW SEEDS=" + count + " GROUPS=" + expected.Length + " MS=" + clock.ElapsedMilliseconds);
+                Assembly candidateAssembly = Assembly.Load(File.ReadAllBytes(args[6]));
+                Type candidateType = candidateAssembly.GetType("NXRefine.UI.RemoveBlendsDialog", true);
+                object candidate = FormatterServices.GetUninitializedObject(candidateType);
+                candidateType.GetField("context", Hidden).SetValue(candidate,
+                    candidateAssembly.GetType("NXRefine.Core.NxContext").GetProperty("Current").GetValue(null, null));
+                Func<Face[][], IEnumerable<string>> keysFor = groups => unionOnly ?
+                    groups.SelectMany(group => group).Select(face => face.Tag.ToString()) :
+                    groups.Select(group => string.Join(",", group.Select(face => face.Tag).OrderBy(tag => tag)));
+                var keys = new HashSet<string>(keysFor(expected));
+                for (int round = 1; round <= 2; round++)
+                {
+                    clock.Restart();
+                    bool fast = unionOnly && candidateType.GetMethod("BuildFastPreviewGroups", Hidden) != null;
+                    Face[][] actual = (Face[][])Call(candidate, fast ? "BuildFastPreviewGroups" : "BuildConnectedGroups", new object[] { sample });
+                    bool equal = keys.SetEquals(keysFor(actual));
+                    report.WriteLine("CANDIDATE_PREVIEW ROUND=" + round + " SEEDS=" + count + " GROUPS=" + actual.Length +
+                        " MS=" + clock.ElapsedMilliseconds + (unionOnly ? " EXACT_SELECTION=" : " EXACT_GROUPS=") + equal);
+                    if (!equal) throw new Exception("Preview changed complete native groups.");
+                }
+                FieldInfo metadata = candidateType.GetField("blendCache", Hidden);
+                if (metadata != null) {
+                metadata.SetValue(candidate, Activator.CreateInstance(metadata.FieldType));
+                string[] reference = null;
+                foreach (int round in new[] { 1, 2 })
+                {
+                    clock.Restart();
+                    string[] values = Faces(part).OrderBy(face => face.Tag).Select(face => {
+                        object[] data = { face, 0.0, false };
+                        bool available = (bool)Call(candidate, "TryGetBlend", data);
+                        return face.Tag + ":" + available + ":" + data[1] + ":" + data[2];
+                    }).ToArray();
+                    bool equal = reference == null || reference.SequenceEqual(values);
+                    report.WriteLine("BLEND_METADATA ROUND=" + round + " FACES=" + values.Length +
+                        " MS=" + clock.ElapsedMilliseconds + " EXACT=" + equal);
+                    if (!equal) throw new Exception("Cached blend radii/classification changed.");
+                    reference = values;
+                }
+                }
+            }
+            else if(args[3]=="blend-delete-types")
+            {
+                object blends=Create("RemoveBlendsDialog");
+                foreach(Body body in part.Bodies.ToArray().Where(b=>b.IsSolidBody&&Include(b,args)))
+                {
+                    Face[] seeds=body.GetFaces().Where(face=>{object[] values={face,0.0,false};return (bool)Call(blends,"TryGetBlend",values)&&(bool)values[2]&&(double)values[1]<=3.0;}).OrderBy(face=>face.Tag).ToArray();
+                    var originalSeeds=new HashSet<Tag>(seeds.Select(face=>face.Tag));
+                    foreach(Face seed in seeds.Take(int.Parse(args[5])))
+                    foreach(var deleteType in new[]{NXOpen.Features.DeleteFaceBuilder.SelectTypes.Face,NXOpen.Features.DeleteFaceBuilder.SelectTypes.FaceEdgeBlend})
+                    {
+                        var mark=session.SetUndoMark(Session.MarkVisibility.Invisible,"Blend deletion type probe");
+                        NXOpen.Features.DeleteFaceBuilder builder=null;
+                        try
+                        {
+                            builder=part.Features.CreateDeleteFaceBuilder(null);builder.Type=deleteType;builder.Heal=true;
+                            var collector=deleteType==NXOpen.Features.DeleteFaceBuilder.SelectTypes.Blend?builder.BlendCollector:builder.FaceCollector;
+                            if(deleteType==NXOpen.Features.DeleteFaceBuilder.SelectTypes.Blend){builder.MaxBlendRadius.RightHandSide="100000";builder.DeletePartialBlend=false;}
+                            collector.ReplaceRules(new[]{(SelectionIntentRule)Call(blends,"CreateConnectedBlendRuleForMode",seed,3)},false);
+                            var selected=new HashSet<Tag>(collector.GetObjects().OfType<Face>().Select(face=>face.Tag));
+                            report.WriteLine("DELETE_TYPE_START SEED="+seed.Tag+" TYPE="+deleteType+" FACES="+selected.Count);
+                            clock.Restart();builder.CommitFeature();var live=new HashSet<Tag>(Faces(part).Select(face=>face.Tag));
+                            int faults;int[] faultTypes;Tag[] objects;uf.Modl.AskBodyConsistency(body.Tag,out faults,out faultTypes,out objects);
+                            report.WriteLine("DELETE_TYPE_RESULT SEED="+seed.Tag+" TYPE="+deleteType+" SELECTED_REMOVED="+selected.Count(tag=>!live.Contains(tag))+" EXTRA_SEEDS_REMOVED="+originalSeeds.Count(tag=>!selected.Contains(tag)&&!live.Contains(tag))+" SOLID="+body.IsSolidBody+" FAULTS="+faults+" MS="+clock.ElapsedMilliseconds);
+                        }
+                        catch(Exception ex){report.WriteLine("DELETE_TYPE_FAILED TYPE="+deleteType+" MS="+clock.ElapsedMilliseconds+" ERROR="+ex.Message);}
+                        finally{if(builder!=null)builder.Destroy();session.UndoToMark(mark,null);session.DeleteUndoMark(mark,null);}
+                    }
+                }
+            }
+            else if(args[3]=="blend-preview-probe")
+            {
+                object blends=Create("RemoveBlendsDialog");
+                foreach(Body body in part.Bodies.ToArray().Where(b=>b.IsSolidBody&&Include(b,args)))
+                {
+                    clock.Restart();
+                    Face[] seeds=body.GetFaces().Where(face=>{object[] values={face,0.0,false};return (bool)Call(blends,"TryGetBlend",values)&&(bool)values[2]&&(double)values[1]<=3.0;}).ToArray();
+                    report.WriteLine("BLEND_SEEDS="+seeds.Length+" FILTER_MS="+clock.ElapsedMilliseconds);
+                    var collector=part.ScCollectors.CreateCollector();
+                    try{clock.Restart();collector.ReplaceRules(new SelectionIntentRule[]{part.ScRuleFactory.CreateRuleFaceAllBlend(body)},false);Face[] all=collector.GetObjects().OfType<Face>().ToArray();report.WriteLine("ALL_BLEND_RULE="+all.Length+" MS="+clock.ElapsedMilliseconds+" TYPES="+string.Join(",",all.GroupBy(f=>f.SolidFaceType).Select(g=>g.Key+":"+g.Count())));var seedSet=new HashSet<Tag>(seeds.Select(f=>f.Tag));var allSet=new HashSet<Tag>(all.Select(f=>f.Tag));var extra=all.Where(f=>!seedSet.Contains(f.Tag)).ToArray();report.WriteLine("ALL_BLEND_COVERAGE MISSING_SEEDS="+seeds.Count(f=>!allSet.Contains(f.Tag))+" EXTRA_TYPES="+string.Join(",",extra.GroupBy(f=>f.SolidFaceType).Select(g=>g.Key+":"+g.Count()))+" NONSPHERICAL_EXTRAS="+extra.Count(f=>f.SolidFaceType!=Face.FaceType.Spherical));}
+                    finally{collector.Destroy();}
+                    var regions=new List<HashSet<Tag>>();var sampledSeeds=new List<Face>();var referenceUnion=new HashSet<Tag>();int covered=0,mismatch=0;long total=0;
+                    int sampleCount=Math.Min(int.Parse(args[5]),seeds.Length);
+                    for(int i=0;i<sampleCount;i++)
+                    {
+                        Face seed=seeds[(int)((long)i*seeds.Length/sampleCount)];
+                        sampledSeeds.Add(seed);
+                        HashSet<Tag> previous=regions.FirstOrDefault(region=>region.Contains(seed.Tag));
+                        collector=part.ScCollectors.CreateCollector();
+                        try
+                        {
+                            clock.Restart();var rule=(SelectionIntentRule)Call(blends,"CreateConnectedBlendRuleForMode",seed,3);collector.ReplaceRules(new[]{rule},false);
+                            var tags=new HashSet<Tag>(collector.GetObjects().OfType<Face>().Select(f=>f.Tag));total+=clock.ElapsedMilliseconds;
+                            referenceUnion.UnionWith(tags);
+                            bool same=previous!=null&&previous.SetEquals(tags);if(previous!=null){covered++;if(!same)mismatch++;}
+                            report.WriteLine("BLEND_RULE SEED="+seed.Tag+" COUNT="+tags.Count+" INCLUDES_SEED="+tags.Contains(seed.Tag)+" PREVIOUSLY_COVERED="+(previous!=null)+" SAME="+same+" MS="+clock.ElapsedMilliseconds);
+                            var partnerTags=seeds.Where(f=>tags.Contains(f.Tag)&&f.Tag!=seed.Tag).OrderBy(f=>f.Tag).ToArray();
+                            if(partnerTags.Length>0)
+                            foreach(Face partner in new[]{partnerTags[0],partnerTags[partnerTags.Length/2],partnerTags[partnerTags.Length-1]}.GroupBy(f=>f.Tag).Select(g=>g.First()))
+                            {
+                                var check=part.ScCollectors.CreateCollector();
+                                try
+                                {
+                                    var partnerRule=(SelectionIntentRule)Call(blends,"CreateConnectedBlendRuleForMode",partner,3);check.ReplaceRules(new[]{partnerRule},false);
+                                    var other=new HashSet<Tag>(check.GetObjects().OfType<Face>().Select(f=>f.Tag));
+                                    sampledSeeds.Add(partner);referenceUnion.UnionWith(other);
+                                    report.WriteLine("BLEND_MEMBER SOURCE="+seed.Tag+" PARTNER="+partner.Tag+" TYPE="+partner.SolidFaceType+" COUNT="+other.Count+" SAME="+tags.SetEquals(other));
+                                }
+                                finally{check.Destroy();}
+                            }
+                            regions.Add(tags);
+                        }
+                        finally{collector.Destroy();}
+                    }
+                    report.WriteLine("BLEND_PROBE SAMPLES="+sampleCount+" COVERED="+covered+" UNEQUAL_COVERED="+mismatch+" RULE_MS="+total);
+                    clock.Restart();
+                    Face[][] batched=(Face[][])Call(blends,"BuildConnectedGroups",new object[]{sampledSeeds.ToArray()});
+                    var batchUnion=new HashSet<Tag>(batched.SelectMany(group=>group).Select(face=>face.Tag));
+                    report.WriteLine("BLEND_BATCH SEEDS="+sampleCount+" FACES="+batchUnion.Count+" MS="+clock.ElapsedMilliseconds+" EXACT_UNION="+referenceUnion.SetEquals(batchUnion));
+                    if(!referenceUnion.SetEquals(batchUnion))throw new Exception("Batched preview differs from individual native rule union.");
+                }
+            }
+            else if(args[3]=="surface-samples")
+            {
+                var ids=args.Length>6?new HashSet<string>(File.ReadAllLines(args[6])):new HashSet<string>();
+                var candidates=Faces(part).Where(f=>f.SolidFaceType!=Face.FaceType.Planar && f.SolidFaceType!=Face.FaceType.Spherical && f.GetEdges().Length<=8).Take(int.Parse(args[5]))
+                    .Concat(Faces(part).Where(f=>ids.Contains(f.Tag.ToString()))).GroupBy(f=>f.Tag).Select(g=>g.First());
+                long singleTime=0,batchTime=0;int tested=0,unsupported=0,opposite=0;double maxPoint=0,maxNormal=0;
+                int wrapperTested=0;Type samplerType=plugin.GetType("NXRefine.Core.FaceSurfaceSampler");
+                foreach(Face face in candidates)
+                {
+                    var uv=new double[4];uf.Modl.AskFaceUvMinmax(face.Tag,uv);
+                    var parameters=new List<double>();
+                    foreach(bool swapped in new[]{false,true})for(int j=0;j<3;j++)for(int k=0;k<7;k++)
+                    {parameters.Add(uv[0]+(swapped?j/2.0:k/6.0)*(uv[1]-uv[0]));parameters.Add(uv[2]+(swapped?k/6.0:j/2.0)*(uv[3]-uv[2]));}
+                    int count=parameters.Count/2;var points=new double[count][];var normals=new double[count][];
+                    clock.Restart();
+                    for(int i=0;i<count;i++)
+                    {
+                        points[i]=new double[3];normals[i]=new double[3];
+                        uf.Modl.AskFaceProps(face.Tag,new[]{parameters[2*i],parameters[2*i+1]},points[i],new double[3],new double[3],new double[3],new double[3],normals[i],new double[2]);
+                    }
+                    singleTime+=clock.ElapsedMilliseconds;
+                    IntPtr evaluator=IntPtr.Zero;
+                    try
+                    {
+                        clock.Restart();uf.Evalsf.Initialize2(face.Tag,out evaluator);
+                        var values=new ModlSrfValue[count];uf.Evalsf.EvaluateArray(evaluator,UFConstants.UF_MODL_EVAL_UNIT_NORMAL,count,parameters.ToArray(),values);
+                        batchTime+=clock.ElapsedMilliseconds;
+                        double sign=Enumerable.Range(0,3).Sum(i=>normals[0][i]*values[0].srf_unormal[i])<0?-1:1;if(sign<0)opposite++;
+                        bool compatible=true;
+                        for(int i=0;i<count;i++)
+                        {
+                            double delta=Math.Sqrt(Enumerable.Range(0,3).Sum(k=>Math.Pow(points[i][k]-values[i].srf_pos[k],2)));
+                            double normal=Math.Sqrt(Enumerable.Range(0,3).Sum(k=>Math.Pow(normals[i][k]-sign*values[i].srf_unormal[k],2)));
+                            maxPoint=Math.Max(maxPoint,delta);maxNormal=Math.Max(maxNormal,normal);
+                            if(delta>1e-7 || normal>1e-7)
+                            {
+                                compatible=false;
+                                report.WriteLine("BATCH_FALLBACK="+face.Tag+" TYPE="+face.SolidFaceType+" INDEX="+i+" UV="+parameters[2*i]+","+parameters[2*i+1]+" POINT_DELTA="+delta+" OLD_NORMAL="+string.Join(",",normals[i])+" NEW_NORMAL="+string.Join(",",values[i].srf_unormal)+" DU="+string.Join(",",values[i].srf_du)+" DV="+string.Join(",",values[i].srf_dv));
+                                break;
+                            }
+                        }
+                        if(compatible)tested++;else unsupported++;
+                    }
+                    catch(NXException ex){unsupported++;report.WriteLine("BATCH_UNSUPPORTED="+face.Tag+" "+ex.Message);}
+                    finally{if(evaluator!=IntPtr.Zero)uf.Evalsf.Free(out evaluator);}
+                    if(samplerType!=null)
+                    {
+                        object sampler=Activator.CreateInstance(samplerType,Hidden,null,new object[]{context,face,null},null);
+                        try
+                        {
+                            foreach(int offset in new[]{0,21})
+                            foreach(bool initial in new[]{true,false})
+                            {
+                                int[] indices=Enumerable.Range(0,21).Where(i=>initial?(i==8||i==10||i==12):(i!=8&&i!=10&&i!=12)).Select(i=>offset+i).ToArray();
+                                object[] values={indices.Select(i=>new[]{parameters[2*i],parameters[2*i+1]}).ToArray(),null,null};
+                                Call(sampler,"Evaluate",values);var sampled=(double[][])values[1];var sampledNormals=(double[][])values[2];
+                                for(int i=0;i<indices.Length;i++)
+                                {
+                                    int expected=indices[i];
+                                    if(Enumerable.Range(0,3).Sum(j=>Math.Pow(points[expected][j]-sampled[i][j],2))>1e-14 ||
+                                        Enumerable.Range(0,3).Sum(j=>Math.Pow(normals[expected][j]-sampledNormals[i][j],2))>1e-14)
+                                        throw new Exception("Production surface sampler differs from legacy on "+face.Tag+" sample "+expected);
+                                }
+                            }
+                            wrapperTested++;
+                        }
+                        finally{((IDisposable)sampler).Dispose();}
+                    }
+                }
+                report.WriteLine("SURFACE_SAMPLES TESTED="+tested+" UNSUPPORTED="+unsupported+" OPPOSITE_NORMALS="+opposite+" MAX_POINT="+maxPoint+" MAX_NORMAL="+maxNormal+" SINGLE_MS="+singleTime+" BATCH_MS="+batchTime);
+                report.WriteLine("PRODUCTION_SAMPLER_MATCHED="+wrapperTested);
+            }
+            else if(args[3]=="hole-target-recovery")
             {
                 object holes=Create("FillHolesDialog");var ids=new HashSet<string>(File.ReadAllLines(args[6]));
                 foreach(Body body in part.Bodies.ToArray().Where(b=>b.IsSolidBody))
@@ -296,6 +505,11 @@ public static class NxCleanupDiagnosis
                         {
                             foreach (string raw in File.ReadAllLines(args[6]).Where(line => !string.IsNullOrWhiteSpace(line) && !line.StartsWith("#")))
                             {
+                                if(raw.StartsWith("@groups="))
+                                {
+                                    if(groups.Length!=int.Parse(raw.Substring(8)))throw new Exception("Unexpected hole group count: "+groups.Length);
+                                    continue;
+                                }
                                 bool excluded = raw.StartsWith("!");
                                 var ids = new HashSet<string>((excluded ? raw.Substring(1) : raw).Split(',').Select(id => id.Trim()));
                                 bool matched = excluded ? groups.Any(group => group.Any(face => ids.Contains(face.Tag.ToString()))) :
@@ -327,10 +541,10 @@ public static class NxCleanupDiagnosis
                     }
                 }
             }
-            else if (args[3] == "blends" || args[3] == "blends-direct")
+            else if (args[3] == "blends" || args[3] == "blends-direct" || args[3]=="blends-once" || args[3]=="blends-scan" || args[3]=="blends-fast-scan" || args[3].StartsWith("blends-continuous"))
             {
                 object blends = Create("RemoveBlendsDialog");
-                for (int round = 1; round <= 2; round++)
+                for (int round = 1; round <= (args[3]=="blends-once"||args[3]=="blends-scan"||args[3]=="blends-fast-scan"||args[3].StartsWith("blends-continuous")?1:2); round++)
                 {
                     clock.Restart();
                     Face[] seeds = Faces(part).Where(face => Include(face.GetBody(), args)).Where(face =>
@@ -338,25 +552,65 @@ public static class NxCleanupDiagnosis
                         object[] values = { face, 0.0, false };
                         return (bool)Call(blends, "TryGetBlend", values) && (bool)values[2] &&
                             (double)values[1] >= 0 && (double)values[1] <= 3.0;
-                    }).ToArray();
+                    }).OrderBy(face=>face.Tag).ToArray();
                     Set(blends, "recognitionSeeds", seeds.Select(f => f.Tag).ToArray());
                     report.WriteLine("BLEND_RECOGNITION_START ROUND=" + round + " SEEDS=" + seeds.Length);
                     // Direct mode isolates deletion scheduling from the very
                     // expensive complete preview. DeleteBestEffort still builds
                     // and commits complete live native rules from these seeds.
-                    Face[][] groups = args[3] == "blends-direct" ? seeds.Select(f => new[] { f }).ToArray() :
-                        (Face[][])Call(blends, "BuildConnectedGroups", new object[] { seeds });
+                    bool direct=args[3]=="blends-direct"||args[3]=="blends-once"||args[3]=="blends-continuous";
+                    Face[][] groups = direct ? seeds.Select(f => new[] { f }).ToArray() :
+                        (Face[][])Call(blends, args[3]=="blends-fast-scan" || args[3]=="blends-continuous-preview" ? "BuildFastPreviewGroups" : "BuildConnectedGroups", new object[] { seeds });
                     Tag[] selected = groups.SelectMany(g => g).Select(f => f.Tag).Distinct().ToArray();
+                    if(args[3]=="blends-continuous-preview" && args[6]!="-")
+                    {
+                        var expected=new HashSet<string>(File.ReadAllLines(args[6]));
+                        var actualTags=new HashSet<string>(selected.Select(tag=>tag.ToString()));
+                        if(!expected.SetEquals(actualTags))throw new Exception("Continuous preview differs from exhaustive reference.");
+                        report.WriteLine("CONTINUOUS_PREVIEW_EXACT=True FACES="+actualTags.Count);
+                    }
                     report.WriteLine("BLENDS ROUND=" + round + " SEEDS=" + seeds.Length +
-                        (args[3] == "blends-direct" ? " SEED_INPUT=" : " PREVIEW=") + selected.Length +
-                        (args[3] == "blends-direct" ? " INPUT_BATCHES=" : " GROUPS=") + groups.Length + " SCAN_MS=" + clock.ElapsedMilliseconds +
+                        (direct ? " SEED_INPUT=" : " PREVIEW=") + selected.Length +
+                        (direct ? " INPUT_BATCHES=" : " GROUPS=") + groups.Length + " SCAN_MS=" + clock.ElapsedMilliseconds +
                         " LARGEST=" + string.Join(",", groups.Select(g => g.Length).OrderByDescending(n => n).Take(10)));
                     clock.Restart();
-                    int removed = (int)Call(blends, "DeleteBestEffort", new object[] { selected });
+                    if(args[3]=="blends-scan"||args[3]=="blends-fast-scan")
+                    {
+                        report.WriteLine("PREVIEW_TAGS="+string.Join(",",selected.OrderBy(tag=>tag)));
+                        if(args.Length>6)
+                        {
+                            var expected=new HashSet<string>(File.ReadAllLines(args[6]).Where(line=>line.Length>0));
+                            var actualTags=new HashSet<string>(selected.Select(tag=>tag.ToString()));
+                            report.WriteLine("PREVIEW_EXPECTED="+expected.Count+" MISSING="+expected.Except(actualTags).Count()+" EXTRA="+actualTags.Except(expected).Count());
+                            if(!expected.SetEquals(actualTags))throw new Exception("Preview differs from the exhaustive native reference.");
+                        }
+                        continue;
+                    }
+                    int removed;
+                    if(args[3].StartsWith("blends-continuous"))
+                    {
+                        Type scanType=plugin.GetType("NXRefine.Core.SelectionScan",true);
+                        object scan=Activator.CreateInstance(scanType,Hidden,null,new object[]{context,null},null);
+                        int seconds=int.Parse(args[7]);
+                        Set(blends,"continuousDelete",true);Set(blends,"activeDeleteScan",scan);
+                        using(var stopTimer=new System.Threading.Timer(delegate(object state){scanType.GetMethod("RequestStop",Hidden).Invoke(scan,null);},null,seconds*1000,System.Threading.Timeout.Infinite))
+                        try
+                        {
+                            try{removed=(int)Call(blends,"DeleteBestEffort",new object[]{selected});}
+                            catch(OperationCanceledException)
+                            {
+                                removed=selected.Length-((Face[])Call(blends,"ResolveCurrentFaces",new object[]{selected})).Length;
+                                report.WriteLine("CONTINUOUS_STOPPED=True REQUEST_SECONDS="+seconds);
+                            }
+                        }
+                        finally{((IDisposable)scan).Dispose();Set(blends,"activeDeleteScan",null);Set(blends,"continuousDelete",false);}
+                    }
+                    else removed = (int)Call(blends, "DeleteBestEffort", new object[] { selected });
                     var live = new HashSet<Tag>(Faces(part).Select(f => f.Tag));
                     int actual = selected.Count(t => !live.Contains(t));
                     report.WriteLine("BLEND_DELETE ROUND=" + round + " REMOVED=" + removed + " MS=" + clock.ElapsedMilliseconds +
                         " ACTUAL=" + actual +
+                        " SEEDS_REMOVED=" + seeds.Count(face=>!live.Contains(face.Tag)) +
                         " ATTEMPTS=" + blends.GetType().GetField("deleteAttempts", Hidden).GetValue(blends) +
                         " BUDGET=" + blends.GetType().GetField("deleteBudgetReported", Hidden).GetValue(blends));
                     if (removed != actual) throw new InvalidOperationException("Reported removals differ from current topology.");

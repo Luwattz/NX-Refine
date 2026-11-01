@@ -1,0 +1,12 @@
+# housing.prt ED737FAFEB2784064DCEA3527FB210010BD36561C52E85422CB3E3C7F943A816
+# Circular planar caps and revolved blend faces; these must remain unchanged.
+39151
+40199
+40329
+42526
+39527
+43321
+41386
+42536
+41474
+43611

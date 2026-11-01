@@ -114,9 +114,26 @@ cases. `diagnose-nx-cleanup.ps1 -Mode holes-scan -ProbePath` accepts an
 expectation file: a comma-separated line requires an exact group; a line
 prefixed with `!` forbids any listed face in the result. Comment lines begin
 with `#`. Assertions fail the native test run before the input is closed.
+`@groups=29` additionally requires the exact group count. The housing
+expectation file contains all 29 valid bore face sets and excludes the five
+rounded rib-end groups, as well as the previously rejected corner rounds.
 
 The Apply regression accepts `-GroupsPath` to avoid repeating an expensive
 recognition pass when validating already recorded groups. `-ExpectedRemovedGroups`
 checks the exact healed count; an all-success cached run additionally checks
 one originally empty bore-axis point per group becomes solid. It still checks
 callback acceptance, Cancel preservation, body consistency and outer undo.
+
+## Batched deletion and Stop regression
+
+See [performance and Stop](FILL_HOLES_PERFORMANCE.md). Verify a disjoint
+all-success batch, a native batch failure followed by independent mixed
+success, and stale/duplicate groups. The existing partial-success callback
+contract must remain intact.
+
+`-AllReviewed -GroupsPath ... -StopAfterSuccess` requests the same managed
+stop signal as the progress button after a batch succeeds. No worker calls
+NX APIs. The test requires completed fills, untouched remaining bore points,
+retained pending groups, direct continuation through Apply without a new
+recognition pass, Cancel preservation, body consistency and outer undo.
+An active native computation may finish before the stop is observed.

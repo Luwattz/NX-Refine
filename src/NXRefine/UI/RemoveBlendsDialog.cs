@@ -19,9 +19,8 @@ namespace NXRefine.UI
     internal sealed class RemoveBlendsDialog : IDisposable
     {
         private const double LargestRadius = 100000.0;
-        // Delete Face is a kernel operation and can become extremely expensive
-        // when a bad blend poisons a large connected chain.  Keep Apply a
-        // bounded UI operation: a failed set is isolated, but never forever.
+        // Bounded defaults for diagnostics. Interactive Apply continues until
+        // the native queue is exhausted or the user requests Stop.
         private const int MaxDeleteAttempts = 256;
         private const int MaxDeleteMilliseconds = 120000;
         private HashSet<Tag> excludedFaces = new HashSet<Tag>();
@@ -49,6 +48,50 @@ namespace NXRefine.UI
         private Stopwatch deleteClock;
         private int deleteAttempts;
         private bool deleteBudgetReported;
+        private bool continuousDelete;
+        private Queue<DeleteJob> primaryJobs;
+        private Queue<DeleteJob> retryJobs;
+        private bool deletePassProgress;
+        private HashSet<string> attemptedDeleteRegions;
+        private SelectionScan activeDeleteScan;
+        private Dictionary<Tag, Tag> deleteOwners;
+        private Dictionary<Tag, int> validatedBodyFaults;
+        private Dictionary<Tag, ConnectedChain> previewChains;
+        private Dictionary<Tag, Tag> previewOwners;
+        private Dictionary<Tag, BlendInfo> blendCache;
+        private Dictionary<Tag, Face> committedFaces;
+        private long recognitionTicks, commitTicks, consistencyTicks, rollbackTicks, resolveTicks;
+        private int consistencyChecks;
+        // Keep each complete native rule as a separate feature. Amortize the
+        // expensive whole-body check over a small undo-protected transaction.
+        private bool strictDeleteValidation = false; // Diagnostic comparison only.
+        private int strictReplayJobs;
+        private DeleteValidationGroup activeValidationGroup;
+
+        private sealed class BlendInfo
+        {
+            internal double Radius;
+            internal bool IsBlend;
+            internal bool Available;
+        }
+
+        private sealed class DeleteJob
+        {
+            internal Tag Seed;
+            internal int Mode;
+        }
+
+        private sealed class DeleteValidationGroup
+        {
+            internal Session.UndoMarkId Mark;
+            internal DeleteJob[] Primary, Retry;
+            internal HashSet<Tag> Seeds;
+            internal HashSet<string> Regions;
+            internal Dictionary<Tag, int> Faults;
+            internal bool PassProgress;
+            internal int Jobs, NativeAttempts;
+            internal readonly Dictionary<Tag, Body> Bodies = new Dictionary<Tag, Body>();
+        }
 
         public RemoveBlendsDialog(NxContext context, CleanupSettings settings)
         {
@@ -189,6 +232,9 @@ namespace NXRefine.UI
 
         private void RebuildCandidatesCore()
         {
+            primaryJobs = null;
+            retryJobs = null;
+            if (blendCache == null) blendCache = new Dictionary<Tag, BlendInfo>();
             radiusTimer.Stop();
             previewTimer.Stop();
             previewValid = false;
@@ -201,26 +247,28 @@ namespace NXRefine.UI
             settings.MinBlendRadius = activeMinRadius;
             settings.MaxBlendRadius = activeMaxRadius;
             settings.Save();
-            foreach (Body body in bodies.Values)
+            Face[] inputFaces = bodies.Values.SelectMany(body => body.GetFaces()).ToArray();
+            int scanned = 0;
+            foreach (Face face in inputFaces)
             {
                 SelectionScan.Checkpoint();
-                foreach (Face face in body.GetFaces())
-                {
-                    SelectionScan.Checkpoint();
+                    scanned++;
+                    if (scanned == 1 || scanned % 32 == 0 || scanned == inputFaces.Length)
+                        SelectionScan.ReportProgress("阶段 1/3：筛选倒圆角\r\n已检查 " + scanned + "/" + inputFaces.Length + " 个面", scanned, inputFaces.Length);
                     double radius;
                     bool isBlend;
                     if (!TryGetBlend(face, out radius, out isBlend)) continue;
                     if (isBlend && radius >= activeMinRadius && radius <= activeMaxRadius)
                         candidates[face.Tag] = face;
-                }
             }
             int seedCount = candidates.Count;
-            recognitionSeeds = candidates.Keys.ToArray();
-            Face[] expanded = BuildConnectedGroups(candidates.Values.ToArray()).SelectMany(group => group)
+            recognitionSeeds = candidates.Keys.OrderBy(tag => tag).ToArray();
+            Face[] expanded = BuildFastPreviewGroups(candidates.Values.OrderBy(face => face.Tag).ToArray()).SelectMany(group => group)
                 .GroupBy(face => face.Tag).Select(group => group.First()).ToArray();
             candidates.Clear();
             foreach (Face face in expanded) candidates[face.Tag] = face;
             foreach (Tag tag in candidates.Keys) retained.Add(tag);
+            SelectionScan.ReportProgress("阶段 3/3：显示选择结果\r\n正在显示 " + candidates.Count + " 个面");
             SyncFaceCollector();
             previewValid = bodies.Count > 0;
             context.Log("Remove Blends: " + seedCount + " radius-filtered seeds; " + candidates.Count + " expanded connected faces. Seed radii " +
@@ -228,6 +276,21 @@ namespace NXRefine.UI
         }
 
         private bool TryGetBlend(Face face, out double radius, out bool isBlend)
+        {
+            BlendInfo data;
+            if (blendCache != null && blendCache.TryGetValue(face.Tag, out data))
+            {
+                radius = data.Radius;
+                isBlend = data.IsBlend;
+                return data.Available;
+            }
+            bool available = ReadBlendData(face, out radius, out isBlend);
+            if (blendCache != null) blendCache[face.Tag] = new BlendInfo {
+                Radius = radius, IsBlend = isBlend, Available = available };
+            return available;
+        }
+
+        private bool ReadBlendData(Face face, out double radius, out bool isBlend)
         {
             radius = 0.0;
             isBlend = false;
@@ -474,20 +537,84 @@ namespace NXRefine.UI
             Face[] selected = RetainedFaces();
             if (selected.Length == 0) return 1;
             Tag[] selectedTags = selected.Select(face => face.Tag).ToArray();
+            Tag[] reviewedTags = candidates.Keys.ToArray();
+            Tag[] selectedBodies = bodies.Keys.ToArray();
             context.Session.SetUndoMark(Session.MarkVisibility.Visible, "NX Refine - Remove Blends");
             excludedFaces = new HashSet<Tag>(candidates.Keys.Where(tag => !retained.Contains(tag)));
             Reset();
-            try { DeleteBestEffort(selectedTags); }
+            bool stopped = false;
+            int previousDisplay = 1;
+            bool restoreDisplay = false;
+            try
+            {
+                // Avoid retessellating/redrawing the entire housing after every
+                // Delete Face. The independent progress window stays responsive.
+                if (!context.Session.IsBatch)
+                {
+                    context.UF.Disp.AskDisplay(out previousDisplay);
+                    if (previousDisplay == 1)
+                    {
+                        restoreDisplay = true;
+                        context.UF.Disp.SetDisplay(0);
+                    }
+                }
+                using (var scan = new SelectionScan(context, "正在删除倒角。\r\n单击“停止”可中断。"))
+                {
+                    activeDeleteScan = scan;
+                    continuousDelete = true;
+                    try { DeleteBestEffort(selectedTags); }
+                    catch (OperationCanceledException) { stopped = true; }
+                    finally { activeDeleteScan = null; continuousDelete = false; }
+                }
+                if (stopped || deleteBudgetReported)
+                    RestorePendingBlends(selectedBodies, reviewedTags, selectedTags);
+            }
             catch (Exception ex) { return Error(ex); }
+            finally
+            {
+                if (restoreDisplay)
+                {
+                    context.UF.Disp.SetDisplay(previousDisplay);
+                    context.UF.Disp.RegenerateDisplay();
+                }
+            }
             int failed = ResolveCurrentFaces(selectedTags).Length;
             int removed = selected.Length - failed;
             if (deleteClock != null)
-                context.Log("Remove Blends delete budget: " + deleteAttempts + " attempts, " +
+                context.Log("Remove Blends deletion: " + deleteAttempts + " attempts, " +
                     deleteClock.ElapsedMilliseconds + " ms.");
             context.Log("Remove Blends removed " + removed + " of " + selected.Length +
-                " selected faces; " + failed + (deleteBudgetReported ? " remain (processing budget reached)." : " remain after native-chain attempts (see failure/skip log)."), true);
+                " selected faces; " + failed + (stopped || deleteBudgetReported ?
+                " remain; Apply continues the pending queue without scanning again." :
+                " remain after native-chain attempts (see failure/skip log)."), true);
             context.UF.Disp.Refresh();
             return 0;
+        }
+
+        private void RestorePendingBlends(Tag[] bodyTags, Tag[] reviewedTags, Tag[] selectedTags)
+        {
+            updating = true;
+            try
+            {
+                var wantedBodies = new HashSet<Tag>(bodyTags);
+                Body[] liveBodies = context.WorkPart.Bodies.ToArray()
+                    .Where(body => wantedBodies.Contains(body.Tag) && body.IsSolidBody).ToArray();
+                var live = liveBodies.SelectMany(body => body.GetFaces()).ToDictionary(face => face.Tag);
+                var selected = new HashSet<Tag>(selectedTags);
+                foreach (Body body in liveBodies) bodies[body.Tag] = body;
+                foreach (Tag tag in reviewedTags)
+                    if (live.ContainsKey(tag))
+                    {
+                        candidates[tag] = live[tag];
+                        if (selected.Contains(tag)) retained.Add(tag);
+                    }
+                if (bodySelect != null) bodySelect.SetSelectedObjects(liveBodies.Cast<TaggedObject>().ToArray());
+                SyncFaceCollector();
+                previewValid = retained.Count > 0;
+                Preview();
+                QueuePreviewRefresh();
+            }
+            finally { updating = false; }
         }
 
         private sealed class ConnectedChain
@@ -515,6 +642,74 @@ namespace NXRefine.UI
             return BuildConnectedChains(seeds).Select(chain => chain.Faces).ToArray();
         }
 
+        private Face[][] BuildFastPreviewGroups(Face[] seeds)
+        {
+            var sources = seeds.GroupBy(face => face.Tag).ToDictionary(group => group.Key, group => group.First());
+            var queue = new Queue<Face>(sources.Values);
+            var queried = new HashSet<Tag>();
+            var outstanding = new HashSet<Tag>(sources.Keys);
+            var covered = new HashSet<Tag>();
+            var ambiguous = new HashSet<Tag>();
+            var union = new HashSet<Tag>();
+            var groups = new List<Face[]>();
+            var groupTags = new List<HashSet<Tag>>();
+            var keys = new HashSet<string>();
+            while (queue.Count > 0)
+            {
+                SelectionScan.Checkpoint();
+                Face seed = queue.Dequeue();
+                if (queried.Contains(seed.Tag)) continue;
+                if (covered.Contains(seed.Tag) && !ambiguous.Contains(seed.Tag) &&
+                    seed.SolidFaceType != Face.FaceType.Spherical)
+                {
+                    outstanding.Remove(seed.Tag);
+                    continue;
+                }
+                queried.Add(seed.Tag);
+                int settled = sources.Count - outstanding.Count;
+                SelectionScan.ReportProgress("阶段 2/3：识别连接倒圆角\r\n已检查或覆盖 " + settled + "/" + sources.Count + " 个源面\r\n已找到 " + union.Count + " 个面；正在计算连接链", settled, sources.Count);
+                foreach (Face[] faces in BuildConnectedGroups(new[] { seed }))
+                {
+                    var tags = new HashSet<Tag>(faces.Select(face => face.Tag));
+                    string key = string.Join(",", tags.OrderBy(tag => tag));
+                    if (!keys.Add(key)) continue;
+                    // A new unequal region that expands a covered source is
+                    // not a canonical component. Exhaust every source in its
+                    // overlap closure, retaining optimization elsewhere.
+                    if (tags.Any(covered.Contains) && tags.Any(tag => !union.Contains(tag)))
+                    {
+                        var affected = new HashSet<Tag>(tags);
+                        bool changed;
+                        do
+                        {
+                            int count = affected.Count;
+                            foreach (HashSet<Tag> previous in groupTags)
+                                if (previous.Overlaps(affected)) affected.UnionWith(previous);
+                            changed = count != affected.Count;
+                        } while (changed);
+                        foreach (Tag tag in affected)
+                        {
+                            ambiguous.Add(tag);
+                            if (sources.ContainsKey(tag) && !queried.Contains(tag))
+                            {
+                                outstanding.Add(tag);
+                                queue.Enqueue(sources[tag]);
+                            }
+                        }
+                    }
+                    groups.Add(faces);
+                    groupTags.Add(tags);
+                    union.UnionWith(tags);
+                    foreach (Tag tag in tags) if (sources.ContainsKey(tag)) covered.Add(tag);
+                }
+                outstanding.Remove(seed.Tag);
+            }
+            context.Log("Remove Blends component preview: " + queried.Count + "/" + sources.Count +
+                " native sources, " + ambiguous.Count + " faces in exhaustive overlap components.");
+            SelectionScan.ReportProgress("阶段 2/3：连接识别完成\r\n已找到 " + union.Count + " 个面", sources.Count, sources.Count);
+            return groups.ToArray();
+        }
+
         private ConnectedChain[] BuildConnectedChains(Face[] seeds)
         {
             return BuildChainsForMode(seeds, 3);
@@ -530,29 +725,48 @@ namespace NXRefine.UI
         private IEnumerable<ConnectedChain> EnumerateChainsForMode(Face[] seeds, int mode, bool checkDeleteBudget)
         {
             var seen = new HashSet<string>();
+            bool cachePreview = mode == 3 && !checkDeleteBudget;
+            if (cachePreview && previewChains == null) previewChains = new Dictionary<Tag, ConnectedChain>();
+            // Preview topology is immutable. Cache only exact ownership queries,
+            // never infer that another seed returns the same native chain.
+            if (cachePreview && previewOwners == null) previewOwners = new Dictionary<Tag, Tag>();
+            var owners = cachePreview ? previewOwners : new Dictionary<Tag, Tag>();
+            int nativeCalls = 0;
             foreach (Face seed in seeds)
             {
                 SelectionScan.Checkpoint();
                 if (checkDeleteBudget && !DeleteBudgetAvailable()) yield break;
+                ConnectedChain cached;
+                if (cachePreview && previewChains.TryGetValue(seed.Tag, out cached))
+                {
+                    string cachedKey = string.Join(",", cached.Faces.Select(face => face.Tag.ToString()));
+                    if (seen.Add(cachedKey)) yield return cached;
+                    continue;
+                }
                 ConnectedChain chain = null;
                 var clock = Stopwatch.StartNew();
                 ScCollector collector = context.WorkPart.ScCollectors.CreateCollector();
+                FaceConnectedBlendRule rule = null;
                 try
                 {
-                    collector.ReplaceRules(new SelectionIntentRule[] {
-                        CreateConnectedBlendRuleForMode(seed, mode) }, false);
+                    nativeCalls++;
+                    rule = CreateConnectedBlendRuleForMode(seed, mode);
+                    collector.ReplaceRules(new SelectionIntentRule[] { rule }, false);
                     Face[] region = collector.GetObjects().OfType<Face>()
                         .GroupBy(face => face.Tag).Select(group => group.First()).OrderBy(face => face.Tag).ToArray();
                     // Radius is only a seed filter. Do not clip the native chain,
                     // synthesize uncovered single faces, or union overlapping rules.
-                    if (region.Length == 0 || region.Any(face => face.GetBody().Tag != seed.GetBody().Tag)) continue;
+                    Tag owner = FaceOwner(seed, owners);
+                    if (region.Length == 0 || region.Any(face => FaceOwner(face, owners) != owner)) continue;
                     string key = string.Join(",", region.Select(face => face.Tag.ToString()));
+                    if (cachePreview) previewChains[seed.Tag] = new ConnectedChain { Seed = seed.Tag, Faces = region };
                     if (seen.Add(key)) chain = new ConnectedChain { Seed = seed.Tag, Faces = region };
                 }
                 catch (NXException ex) { context.Log("Connected blend recognition failed: " + ex.Message); }
                 finally
                 {
-                    collector.Destroy();
+                    try { collector.Destroy(); }
+                    finally { if (rule != null) rule.Dispose(); }
                     if (clock.ElapsedMilliseconds >= 1000)
                         context.Log("Remove Blends slow native recognition: seed=" + seed.Tag +
                             ", mode=" + mode + ", " + clock.ElapsedMilliseconds + " ms.");
@@ -561,75 +775,229 @@ namespace NXRefine.UI
                 // topology. The delete builder recreates the complete live rule.
                 if (chain != null) yield return chain;
             }
+            if (!checkDeleteBudget && seeds.Length > 1) context.Log("Remove Blends preview: " + nativeCalls +
+                " native rules; " + owners.Count + " unique face ownership queries.");
+        }
+
+        private static Tag FaceOwner(Face face, Dictionary<Tag, Tag> owners)
+        {
+            Tag owner;
+            if (!owners.TryGetValue(face.Tag, out owner))
+                owners.Add(face.Tag, owner = face.GetBody().Tag);
+            return owner;
         }
 
         private int DeleteBestEffort(Tag[] tags)
         {
+            // Any native edit invalidates preview-only geometry/rule caches.
+            previewChains = null;
+            previewOwners = null;
+            blendCache = null;
             deleteAttempts = 0;
             deleteBudgetReported = false;
             deleteClock = Stopwatch.StartNew();
+            recognitionTicks = commitTicks = consistencyTicks = rollbackTicks = resolveTicks = 0;
+            consistencyChecks = 0;
             if (excludedFaces == null) excludedFaces = new HashSet<Tag>();
             // A native rule's seed need not belong to its expanded result.
             // Re-seeding only from preview faces can therefore lose the exact
             // operation which produced the preview, especially on later runs.
-            var seedPool = new HashSet<Tag>(tags.Concat(recognitionSeeds ?? new Tag[0]));
-            Tag[] seedOrder = seedPool.ToArray();
-            bool progress;
-            do
+            var orderedSources = (recognitionSeeds ?? new Tag[0]).OrderBy(tag => tag)
+                .Concat(tags.OrderBy(tag => tag)).Distinct().ToArray();
+            var seedPool = new HashSet<Tag>(orderedSources);
+            if (primaryJobs != null) seedPool.UnionWith(primaryJobs.Select(job => job.Seed));
+            if (retryJobs != null) seedPool.UnionWith(retryJobs.Select(job => job.Seed));
+            if (primaryJobs == null || retryJobs == null ||
+                (primaryJobs.Count == 0 && retryJobs.Count == 0))
             {
-                progress = false;
-                var attemptedRegions = new HashSet<string>();
-                // A broader native recognition result is not necessarily healable.
-                // Exhaust the preferred mode, then try other complete native rules
-                // if it made no progress. Never trim a rule into fixed face subsets.
-                foreach (int mode in new[] { 3, 0, 1, 2 })
+                primaryJobs = new Queue<DeleteJob>(orderedSources.Select(tag => new DeleteJob { Seed = tag, Mode = 3 }));
+                retryJobs = new Queue<DeleteJob>();
+                deletePassProgress = false;
+                attemptedDeleteRegions = new HashSet<string>();
+                strictReplayJobs = 0;
+            }
+            if (attemptedDeleteRegions == null) attemptedDeleteRegions = new HashSet<string>();
+            var live = ResolveCurrentFaces(seedPool).ToDictionary(face => face.Tag);
+            int removedCount = tags.Count(tag => !live.ContainsKey(tag));
+            int validatedRemovedCount = removedCount;
+            deleteOwners = new Dictionary<Tag, Tag>();
+            validatedBodyFaults = new Dictionary<Tag, int>();
+            try
+            {
+                while (DeleteBudgetAvailable())
                 {
                     SelectionScan.Checkpoint();
-                    if (!DeleteBudgetAvailable()) break;
-                    Face[] liveSeeds = ResolveCurrentFaces(seedPool);
-                    var byTag = liveSeeds.ToDictionary(face => face.Tag);
-                    var orderedTags = new HashSet<Tag>(seedOrder);
-                    Face[] seeds = seedOrder.Where(byTag.ContainsKey).Select(tag => byTag[tag])
-                        .Concat(liveSeeds.Where(face => !orderedTags.Contains(face.Tag))).ToArray();
-                    // Stream complete native chains instead of spending the
-                    // entire delete budget building an all-seed list first.
-                    foreach (ConnectedChain chain in EnumerateChainsForMode(seeds, mode, true))
+                    if (primaryJobs.Count == 0 && retryJobs.Count == 0)
                     {
-                        SelectionScan.Checkpoint();
-                        if (!DeleteBudgetAvailable()) break;
-                        foreach (Face face in chain.Faces) seedPool.Add(face.Tag);
-                        Face seed;
-                        byTag.TryGetValue(chain.Seed, out seed);
-                        if (seed != null && TryDeleteChainForMode(seed, mode, attemptedRegions))
+                        if (!deletePassProgress) break;
+                        primaryJobs = new Queue<DeleteJob>(live.Keys.Select(tag => new DeleteJob { Seed = tag, Mode = 3 }));
+                        deletePassProgress = false;
+                        attemptedDeleteRegions.Clear();
+                    }
+                    Queue<DeleteJob> queue = primaryJobs.Count > 0 ? primaryJobs : retryJobs;
+                    if (queue.Count == 0) break;
+                    if (!strictDeleteValidation && strictReplayJobs == 0 && activeValidationGroup == null)
+                        BeginDeleteValidationGroup(seedPool);
+                    DeleteJob job = queue.Peek();
+                    Face seed;
+                    if (live.TryGetValue(job.Seed, out seed))
+                    {
+                        if (activeDeleteScan != null)
+                            activeDeleteScan.SetProgress("正在清理倒圆角\r\n已删除 " + validatedRemovedCount + "/" + tags.Length + " 个选面；已尝试 " + deleteAttempts + " 条链\r\n单击“停止”保留已完成的清理", validatedRemovedCount, tags.Length);
+                        Tag[] recognized;
+                        int attemptsBefore = deleteAttempts;
+                        bool deleted = TryDeleteChainCore(seed, job.Mode, attemptedDeleteRegions, out recognized);
+                        // A slow recognition may reach the time limit before
+                        // commit. Keep that unattempted job for Resume.
+                        if (!deleted && deleteBudgetReported && deleteAttempts == attemptsBefore) break;
+                        queue.Dequeue();
+                        foreach (Tag tag in recognized)
+                            if (seedPool.Add(tag)) primaryJobs.Enqueue(new DeleteJob { Seed = tag, Mode = 3 });
+                        if (deleted)
                         {
-                            progress = true;
-                            // Continue after this seed on the next live-topology
-                            // pass. Restarting at the first face after every
-                            // commit repeatedly spends the budget on the same
-                            // failed prefix and starves later native chains.
-                            int index = Array.FindIndex(seeds, face => face.Tag == chain.Seed);
-                            seedOrder = seeds.Skip(index + 1).Concat(seeds.Take(index + 1))
-                                .Select(face => face.Tag).ToArray();
-                            // All remaining enumerator faces refer to the old
-                            // topology. Dispose it and restart from live seeds.
-                            break;
+                            deletePassProgress = true;
+                            // Retry changed failures only after a complete pass.
+                            deleteOwners.Clear();
+                            live = committedFaces.Where(pair => seedPool.Contains(pair.Key))
+                                .ToDictionary(pair => pair.Key, pair => pair.Value);
+                            removedCount = tags.Count(tag => !live.ContainsKey(tag));
+                            if (activeValidationGroup == null) validatedRemovedCount = removedCount;
+                        }
+                        else
+                        {
+                            int nextMode = job.Mode == 3 ? 1 : job.Mode == 1 ? 2 : job.Mode == 2 ? 0 : -1;
+                            if (nextMode >= 0) retryJobs.Enqueue(new DeleteJob { Seed = job.Seed, Mode = nextMode });
                         }
                     }
-                    if (progress) break;
+                    else queue.Dequeue();
+                    if (strictReplayJobs > 0) strictReplayJobs--;
+                    DeleteValidationGroup group = activeValidationGroup;
+                    if (group != null)
+                    {
+                        group.Jobs++;
+                        // Count failed kernel calls too: an invalid tentative
+                        // heal must not poison an unbounded number of retries.
+                        if (group.NativeAttempts >= 4 || group.Jobs >= 16 ||
+                            (primaryJobs.Count == 0 && retryJobs.Count == 0))
+                        {
+                            if (!FinishDeleteValidationGroup(group))
+                            {
+                                seedPool = new HashSet<Tag>(group.Seeds);
+                                live = ResolveCurrentFaces(seedPool).ToDictionary(face => face.Tag);
+                                removedCount = tags.Count(tag => !live.ContainsKey(tag));
+                            }
+                            validatedRemovedCount = removedCount;
+                        }
+                    }
                 }
-                // Re-recognize from current topology after progress, as manual
-                // connected-face selection does after each successful operation.
-            } while (progress && DeleteBudgetAvailable());
-            deleteClock.Stop();
+            }
+            finally
+            {
+                // Stop is cooperative. Validate or undo pending edits before
+                // returning; do not call Checkpoint or replay after Stop.
+                try
+                {
+                    if (activeValidationGroup != null) FinishDeleteValidationGroup(activeValidationGroup);
+                }
+                finally
+                {
+                    deleteOwners = null; validatedBodyFaults = null; committedFaces = null; deleteClock.Stop();
+                    context.Log("Remove Blends phase timing (ms): recognition=" + ToMilliseconds(recognitionTicks) +
+                        ", commit=" + ToMilliseconds(commitTicks) + ", consistency=" + ToMilliseconds(consistencyTicks) +
+                        " (" + consistencyChecks + " checks), undo=" + ToMilliseconds(rollbackTicks) +
+                        ", face-map=" + ToMilliseconds(resolveTicks) + ", total=" + deleteClock.ElapsedMilliseconds + ".");
+                }
+            }
             return tags.Length - ResolveCurrentFaces(tags).Length;
+        }
+
+        private DeleteValidationGroup BeginDeleteValidationGroup(HashSet<Tag> seeds)
+        {
+            var group = new DeleteValidationGroup
+            {
+                Primary = primaryJobs.ToArray(), Retry = retryJobs.ToArray(),
+                Seeds = new HashSet<Tag>(seeds), Regions = new HashSet<string>(attemptedDeleteRegions),
+                Faults = new Dictionary<Tag, int>(validatedBodyFaults), PassProgress = deletePassProgress,
+                Mark = context.Session.SetUndoMark(Session.MarkVisibility.Invisible, "NX Refine - Validate Blend Edits")
+            };
+            activeValidationGroup = group;
+            return group;
+        }
+
+        private bool FinishDeleteValidationGroup(DeleteValidationGroup group)
+        {
+            bool valid = true;
+            var faults = new Dictionary<Tag, int>();
+            try
+            {
+                if (group.Bodies.Count > 0 && activeDeleteScan != null)
+                    activeDeleteScan.SetProgress("正在验证清理结果\r\n停止后保留通过验证的清理");
+                foreach (var pair in group.Bodies)
+                {
+                    int count = BodyFaultCount(pair.Value);
+                    faults.Add(pair.Key, count);
+                    if (!pair.Value.IsSolidBody || count > validatedBodyFaults[pair.Key]) valid = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                valid = false;
+                context.Log("Remove Blends grouped validation failed: " + ex.Message);
+            }
+            try
+            {
+                if (valid)
+                {
+                    foreach (var pair in faults) validatedBodyFaults[pair.Key] = pair.Value;
+                    if (group.Bodies.Count > 0)
+                        context.Log("Remove Blends validated transaction: " + group.NativeAttempts +
+                            " native attempt(s), " + group.Bodies.Count + " body check(s).");
+                }
+                else
+                {
+                    long start = Stopwatch.GetTimestamp();
+                    try { context.Session.UndoToMark(group.Mark, null); }
+                    finally { rollbackTicks += Stopwatch.GetTimestamp() - start; }
+                    primaryJobs = new Queue<DeleteJob>(group.Primary);
+                    retryJobs = new Queue<DeleteJob>(group.Retry);
+                    attemptedDeleteRegions = new HashSet<string>(group.Regions);
+                    validatedBodyFaults = new Dictionary<Tag, int>(group.Faults);
+                    deletePassProgress = group.PassProgress;
+                    strictReplayJobs = group.Jobs;
+                    if (deleteOwners != null) deleteOwners.Clear();
+                    committedFaces = null;
+                    context.Log("Remove Blends rolled back a transaction; queued " + group.Jobs +
+                        " job(s) for individual consistency validation.");
+                }
+                return valid;
+            }
+            finally
+            {
+                activeValidationGroup = null;
+                context.Session.DeleteUndoMark(group.Mark, null);
+            }
         }
 
         private Face[] ResolveCurrentFaces(IEnumerable<Tag> tags)
         {
             var wanted = new HashSet<Tag>(tags);
-            return context.WorkPart.Bodies.ToArray()
-                .Where(body => !body.IsOccurrence && body.IsSolidBody)
-                .SelectMany(body => body.GetFaces()).Where(face => wanted.Contains(face.Tag)).ToArray();
+            return CurrentFaceMap().Where(pair => wanted.Contains(pair.Key)).Select(pair => pair.Value).ToArray();
+        }
+
+        private Dictionary<Tag, Face> CurrentFaceMap()
+        {
+            long start = Stopwatch.GetTimestamp();
+            try
+            {
+                return context.WorkPart.Bodies.ToArray().Where(body => !body.IsOccurrence && body.IsSolidBody)
+                    .SelectMany(body => body.GetFaces()).ToDictionary(face => face.Tag);
+            }
+            finally { resolveTicks += Stopwatch.GetTimestamp() - start; }
+        }
+
+        private static long ToMilliseconds(long ticks)
+        {
+            return ticks * 1000 / Stopwatch.Frequency;
         }
 
         private int BodyFaultCount(Body body)
@@ -637,7 +1005,10 @@ namespace NXRefine.UI
             int count;
             int[] faults;
             Tag[] objects;
-            context.UF.Modl.AskBodyConsistency(body.Tag, out count, out faults, out objects);
+            long start = Stopwatch.GetTimestamp();
+            consistencyChecks++;
+            try { context.UF.Modl.AskBodyConsistency(body.Tag, out count, out faults, out objects); }
+            finally { consistencyTicks += Stopwatch.GetTimestamp() - start; }
             return count;
         }
 
@@ -648,49 +1019,93 @@ namespace NXRefine.UI
 
         private bool TryDeleteChainForMode(Face seed, int mode, HashSet<string> attemptedRegions)
         {
+            Tag[] recognized;
+            return TryDeleteChainCore(seed, mode, attemptedRegions, out recognized);
+        }
+
+        private bool TryDeleteChainCore(Face seed, int mode, HashSet<string> attemptedRegions, out Tag[] recognized)
+        {
+            recognized = new Tag[0];
+            committedFaces = null;
             DeleteFaceBuilder builder = null;
+            FaceConnectedBlendRule liveRule = null;
             int recognizedCount = 0;
+            string regionKey = null;
             Tag seedTag = seed.Tag;
             Session.UndoMarkId mark = context.Session.SetUndoMark(Session.MarkVisibility.Invisible,
                 "NX Refine - Native Connected Blend Faces");
             try
             {
+                long recognitionStart = Stopwatch.GetTimestamp();
                 Body body = seed.GetBody();
                 builder = context.WorkPart.Features.CreateDeleteFaceBuilder(null);
                 builder.Type = DeleteFaceBuilder.SelectTypes.Face;
                 builder.Heal = true;
                 // Same selection intent as Delete Face > Connected Blend Faces.
                 // Keep the live native rule in the actual builder, not a FaceDumbRule.
-                builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] {
-                    CreateConnectedBlendRuleForMode(seed, mode) }, false);
+                liveRule = CreateConnectedBlendRuleForMode(seed, mode);
+                builder.FaceCollector.ReplaceRules(new SelectionIntentRule[] { liveRule }, false);
                 Face[] chain = builder.FaceCollector.GetObjects().OfType<Face>().ToArray();
+                recognitionTicks += Stopwatch.GetTimestamp() - recognitionStart;
+                recognized = chain.Select(face => face.Tag).ToArray();
                 recognizedCount = chain.Length;
                 if (chain.Length == 0) return false;
-                if (chain.Any(face => face.GetBody().Tag != body.Tag))
+                var owners = deleteOwners ?? new Dictionary<Tag, Tag>();
+                if (chain.Any(face => FaceOwner(face, owners) != body.Tag))
                     throw new InvalidOperationException("Connected rule crossed the selected body.");
                 if (excludedFaces != null && chain.Any(face => excludedFaces.Contains(face.Tag)))
                 {
                     context.Log("Remove Blends skipped a connected chain containing a manually deselected face.");
                     return false;
                 }
-                string regionKey = string.Join(",", chain.Select(face => face.Tag).OrderBy(tag => tag)
+                regionKey = string.Join(",", chain.Select(face => face.Tag).OrderBy(tag => tag)
                     .Select(tag => tag.ToString()));
-                if (attemptedRegions != null && !attemptedRegions.Add(regionKey)) return false;
+                if (attemptedRegions != null && attemptedRegions.Contains(regionKey)) return false;
                 if (!BeginDeleteAttempt()) return false;
+                if (attemptedRegions != null) attemptedRegions.Add(regionKey);
                 Tag[] selected = chain.Select(face => face.Tag).ToArray();
-                int originalFaults = BodyFaultCount(body);
-                builder.CommitFeature();
-                if (ResolveCurrentFaces(selected).Length != 0)
+                int originalFaults;
+                if (validatedBodyFaults == null || !validatedBodyFaults.TryGetValue(body.Tag, out originalFaults))
+                {
+                    originalFaults = BodyFaultCount(body);
+                    if (validatedBodyFaults != null) validatedBodyFaults[body.Tag] = originalFaults;
+                }
+                SelectionScan.Checkpoint();
+                context.Log("Remove Blends native attempt: seed=" + seedTag + ", mode=" + mode +
+                    ", faces=" + selected.Length + ".");
+                long commitStart = Stopwatch.GetTimestamp();
+                if (activeValidationGroup != null) activeValidationGroup.NativeAttempts++;
+                try { builder.CommitFeature(); }
+                finally { commitTicks += Stopwatch.GetTimestamp() - commitStart; }
+                Dictionary<Tag, Face> after = CurrentFaceMap();
+                if (selected.Any(after.ContainsKey))
                     throw new InvalidOperationException("NX did not remove the full currently selected native chain.");
-                if (!body.IsSolidBody || BodyFaultCount(body) > originalFaults)
+                if (!body.IsSolidBody)
                     throw new InvalidOperationException("NX healing introduced body consistency errors.");
-                context.Log("Remove Blends committed native connected chain: " + selected.Length +
+                if (activeValidationGroup != null) activeValidationGroup.Bodies[body.Tag] = body;
+                else
+                {
+                    int currentFaults = BodyFaultCount(body);
+                    if (currentFaults > originalFaults)
+                        throw new InvalidOperationException("NX healing introduced body consistency errors.");
+                    if (validatedBodyFaults != null) validatedBodyFaults[body.Tag] = currentFaults;
+                }
+                committedFaces = after;
+                context.Log("Remove Blends " + (activeValidationGroup == null ? "committed" : "tentatively healed") +
+                    " native connected chain: " + selected.Length +
                     " face(s), recognition mode=" + mode + ".");
                 return true;
             }
             catch (Exception ex)
             {
-                context.Session.UndoToMark(mark, null);
+                long rollbackStart = Stopwatch.GetTimestamp();
+                try { context.Session.UndoToMark(mark, null); }
+                finally { rollbackTicks += Stopwatch.GetTimestamp() - rollbackStart; }
+                if (ex is OperationCanceledException)
+                {
+                    if (attemptedRegions != null && regionKey != null) attemptedRegions.Remove(regionKey);
+                    throw;
+                }
                 context.Log("Remove Blends " + (ex is NXException ? "NX deletion failed" : "post-check rollback") +
                     " (seed=" + seedTag + ", mode=" + mode + ", faces=" + recognizedCount +
                     (ex is NXException ? ", code=" + ((NXException)ex).ErrorCode : "") + "): " + ex.Message);
@@ -700,7 +1115,12 @@ namespace NXRefine.UI
             {
                 try { if (builder != null) builder.Destroy(); }
                 catch (NXException) { /* Rollback can already invalidate the builder. */ }
-                finally { context.Session.DeleteUndoMark(mark, null); }
+                finally
+                {
+                    try { if (liveRule != null) liveRule.Dispose(); }
+                    catch (NXException) { /* Undo may already release the native rule. */ }
+                    finally { context.Session.DeleteUndoMark(mark, null); }
+                }
             }
         }
         private bool BeginDeleteAttempt()
@@ -712,6 +1132,7 @@ namespace NXRefine.UI
 
         private bool DeleteBudgetAvailable()
         {
+            if (continuousDelete) return true;
             if (deleteClock == null) return true;
             bool available = deleteAttempts < MaxDeleteAttempts &&
                 deleteClock.ElapsedMilliseconds < MaxDeleteMilliseconds;
@@ -734,7 +1155,7 @@ namespace NXRefine.UI
             {
                 if (bodySelect != null) bodySelect.SetSelectedObjects(new TaggedObject[0]);
                 if (faceSelect != null) faceSelect.SetSelectedObjects(new TaggedObject[0]);
-                context.UI.SelectionManager.ClearGlobalSelectionList();
+                if (!context.Session.IsBatch) context.UI.SelectionManager.ClearGlobalSelectionList();
                 ClearPreview();
                 bodies.Clear();
                 candidates.Clear();
@@ -746,6 +1167,11 @@ namespace NXRefine.UI
         private int Cancel()
         {
             Reset();
+            primaryJobs = null;
+            retryJobs = null;
+            previewChains = null;
+            previewOwners = null;
+            blendCache = null;
             ready = false;
             return 0;
         }
@@ -782,11 +1208,3 @@ namespace NXRefine.UI
         }
     }
 }
-
-
-
-
-
-
-
-

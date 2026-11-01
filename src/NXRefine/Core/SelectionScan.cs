@@ -19,11 +19,16 @@ namespace NXRefine.Core
         private volatile bool disposed;
         private volatile Exception windowFailure;
         private long lastPoll;
+        private volatile string progressText;
+        private volatile int progressCompleted;
+        private volatile int progressTotal;
 
-        internal SelectionScan(NxContext context)
+        internal SelectionScan(NxContext context, string message = null)
         {
             if (current != null) throw new InvalidOperationException("A selection scan is already running.");
             this.context = context;
+            progressText = message ?? "单击“停止”可中断\r\n此操作。";
+            if (context.Session.IsBatch) { current = this; return; }
             windowThread = new Thread(delegate() {
                 try { ShowProgress(); }
                 catch (Exception ex) { windowFailure = ex; }
@@ -33,15 +38,38 @@ namespace NXRefine.Core
             current = this;
         }
 
+        // Only managed state crosses threads; all NX calls stay on the NX thread.
+        internal void RequestStop() { stopped = true; }
+        internal void SetProgress(string message) { progressText = message; }
+        internal void SetProgress(string message, int completed, int total)
+        {
+            progressCompleted = completed;
+            progressTotal = total;
+            progressText = message;
+        }
+        internal static void ReportProgress(string message, int completed = 0, int total = 0)
+        {
+            if (current != null) current.SetProgress(message, completed, total);
+        }
+
         private void ShowProgress()
         {
             // Avoid flashing a window for quick selections. This wait never blocks NX.
             while (!disposed && clock.ElapsedMilliseconds < 700) Thread.Sleep(25);
             if (disposed) return;
-            using (var form = new Form())
-            using (var font = new Font("Microsoft YaHei UI", 18F, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (var hourglass = CreateHourglass())
-            using (var timer = new System.Windows.Forms.Timer { Interval = 50 })
+            using (var form = CreateProgressForm())
+                if (!disposed) Application.Run(form);
+        }
+
+        // Construct without showing so the actual window can be rendered and
+        // measured in an isolated UI regression without an NX session.
+        private Form CreateProgressForm()
+        {
+            var form = new Form();
+            var font = new Font("Microsoft YaHei UI", 18F, FontStyle.Regular, GraphicsUnit.Pixel);
+            var hourglass = CreateHourglass();
+            var timer = new System.Windows.Forms.Timer { Interval = 50 };
+            form.Disposed += delegate { timer.Dispose(); hourglass.Dispose(); font.Dispose(); };
             {
                 form.Text = "工作进行中";
                 form.Font = font;
@@ -60,8 +88,10 @@ namespace NXRefine.Core
                 form.HandleCreated += delegate { StyleCaption(form.Handle); };
                 var icon = new PictureBox { Image = hourglass, SizeMode = PictureBoxSizeMode.StretchImage,
                     Location = new Point(16, 15), Size = new Size(36, 48), TabStop = false };
-                var label = new Label { Text = "单击“停止”可中断\r\n此操作。", AutoSize = true,
+                var label = new Label { Text = progressText, AutoSize = true,
                     Location = new Point(80, 14), Size = new Size(264, 52), UseMnemonic = false };
+                var progress = new ProgressBar { Minimum = 0, Maximum = 1000,
+                    Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 35, Height = 16 };
                 var stop = new Button { Text = "停止(&S)", Location = new Point(125, 75), Size = new Size(95, 32),
                     FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(0, 128, 153), ForeColor = Color.White,
                     UseVisualStyleBackColor = false, Cursor = Cursors.Hand, TabIndex = 0 };
@@ -69,7 +99,7 @@ namespace NXRefine.Core
                 stop.FlatAppearance.MouseOverBackColor = Color.FromArgb(0, 112, 136);
                 stop.FlatAppearance.MouseDownBackColor = Color.FromArgb(0, 95, 117);
                 Action requestStop = delegate {
-                    stopped = true;
+                    RequestStop();
                     stop.Enabled = false;
                     label.Text = "正在停止…\r\n等待当前计算结束。";
                 };
@@ -79,6 +109,7 @@ namespace NXRefine.Core
                 };
                 form.Controls.Add(icon);
                 form.Controls.Add(label);
+                form.Controls.Add(progress);
                 form.Controls.Add(stop);
                 form.CancelButton = stop;
                 // Match the compact NX progress window in physical pixels. Point
@@ -94,7 +125,9 @@ namespace NXRefine.Core
                     stop.Size = new Size(Math.Max(95, buttonText.Width + margin),
                         Math.Max(32, buttonText.Height + 6));
                     int width = Math.Max(360, label.Left + textSize.Width + margin);
-                    int buttonTop = Math.Max(icon.Bottom, label.Top + textSize.Height) + 10;
+                    int progressTop = Math.Max(icon.Bottom, label.Top + textSize.Height) + 10;
+                    progress.SetBounds(margin, progressTop, width - 2 * margin, 16);
+                    int buttonTop = progress.Bottom + 10;
                     stop.Location = new Point((width - stop.Width) / 2, buttonTop);
                     form.ClientSize = new Size(width, stop.Bottom + 8);
                 };
@@ -102,9 +135,21 @@ namespace NXRefine.Core
                 form.FontChanged += delegate { layout(); };
                 label.TextChanged += delegate { layout(); };
                 layout();
-                timer.Tick += delegate { if (disposed) form.Close(); };
+                timer.Tick += delegate {
+                    if (disposed) { form.Close(); return; }
+                    stop.Enabled = !stopped;
+                    string elapsed = "已用时 " + ((int)clock.Elapsed.TotalMinutes).ToString() + " 分 " + clock.Elapsed.Seconds.ToString("00") + " 秒";
+                    label.Text = (stopped ? "正在停止…\r\n等待当前计算结束。" : progressText) + "\r\n" + elapsed;
+                    int total = progressTotal;
+                    if (total > 0)
+                    {
+                        progress.Style = ProgressBarStyle.Continuous;
+                        progress.Value = (int)Math.Max(0, Math.Min(1000, (long)progressCompleted * 1000 / total));
+                    }
+                    else progress.Style = ProgressBarStyle.Marquee;
+                };
                 timer.Start();
-                if (!disposed) Application.Run(form);
+                return form;
             }
         }
 

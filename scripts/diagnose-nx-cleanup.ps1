@@ -1,12 +1,13 @@
 param(
     [Parameter(Mandatory = $true)][string]$PartPath,
-    [ValidateSet('audit', 'holes-scan', 'holes', 'hole-walls', 'hole-neighbors', 'hole-recovery', 'hole-circles', 'hole-picks', 'hole-targets', 'hole-target-recovery', 'mesh', 'probes', 'split-probes', 'blends', 'blends-direct')]
+    [ValidateSet('audit', 'holes-scan', 'holes', 'hole-walls', 'hole-neighbors', 'hole-recovery', 'hole-circles', 'hole-picks', 'hole-targets', 'hole-target-recovery', 'surface-samples', 'blend-preview-probe', 'blend-preview-compare', 'blend-preview-union-compare', 'blend-preview-components-compare', 'blend-delete-types', 'mesh', 'probes', 'split-probes', 'blends', 'blends-direct', 'blends-once', 'blends-scan', 'blends-fast-scan', 'blends-continuous', 'blends-continuous-preview')]
     [string]$Mode = 'audit',
     [string]$BodyTag = '',
     [ValidateRange(1, 100)][int]$MaximumGroups = 8,
     [string]$NXInstallDir = 'C:\Program Files\Siemens\DesigncenterNX2512',
     [string]$PluginPath = '',
     [string]$ProbePath = '',
+    [ValidateRange(1, 3600)][int]$DeleteSeconds = 360,
     [switch]$CompileOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -31,6 +32,7 @@ $env:PATH = (Join-Path $NXInstallDir 'NXBIN') + ';' + $env:PATH
 if (-not $BodyTag) { $BodyTag = 'all' }
 $arguments = @($executable, $copy, $plugin, $report, $Mode, $BodyTag, $MaximumGroups.ToString())
 if($ProbePath) { $arguments += (Resolve-Path -LiteralPath $ProbePath).Path }
+if($Mode -like 'blends-continuous*') { if(-not $ProbePath) { $arguments += '-' }; $arguments += $DeleteSeconds.ToString() }
 # NX 2512 compiles C# journals with managed_core references. Run the compiled
 # Framework executable through NX's matching loader to avoid mixed NXOpen types.
 & (Join-Path $NXInstallDir 'NXBIN\run_dotnet_nxopen.exe') @arguments

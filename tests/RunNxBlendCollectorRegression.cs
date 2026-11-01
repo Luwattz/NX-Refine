@@ -90,13 +90,17 @@ public class RunNxBlendCollectorRegression
         var clock = Stopwatch.StartNew();
         type.GetField("deleteClock", flags).SetValue(dialog, clock);
         type.GetField("deleteAttempts", flags).SetValue(dialog, 256);
+        type.GetField("continuousDelete", flags).SetValue(dialog, true);
+        if (!(bool)type.GetMethod("DeleteBudgetAvailable", flags).Invoke(dialog, null))
+            throw new Exception("Interactive continuous cleanup must not stop at the diagnostic budget.");
+        type.GetField("continuousDelete", flags).SetValue(dialog, false);
         Face restored = (Face)NXOpen.Utilities.NXObjectManager.Get(selected);
         var enumerable = (IEnumerable)type.GetMethod("EnumerateChainsForMode", flags)
             .Invoke(dialog, new object[] { new[] { restored }, 3, true });
         var enumerator = enumerable.GetEnumerator();
         try { if (enumerator.MoveNext()) throw new Exception("Recognition exceeded the delete attempt budget."); }
         finally { ((IDisposable)enumerator).Dispose(); }
-        var preview = (Face[][])type.GetMethod("BuildConnectedGroups", flags)
+        var preview = (Face[][])type.GetMethod("BuildFastPreviewGroups", flags)
             .Invoke(dialog, new object[] { new[] { restored } });
         if (preview.Length != 1 || preview[0].Length != 1 || preview[0][0].Tag != selected)
             throw new Exception("An exhausted previous deletion budget truncated the preview.");
@@ -116,7 +120,67 @@ public class RunNxBlendCollectorRegression
         }
         finally { session.UndoToMark(mark, null); session.DeleteUndoMark(mark, null); }
         if (body.GetFaces().Length != 7) throw new Exception("Streamed deletion undo failed.");
+        // A stop leaves the unstarted job queued. Resume must use the same
+        // reviewed selection, including faces manually excluded by the user.
+        object context = assembly.GetType("NXRefine.Core.NxContext").GetProperty("Current").GetValue(null, null);
+        Type scanType = assembly.GetType("NXRefine.Core.SelectionScan", true);
+        object scan = Activator.CreateInstance(scanType, flags, null, new object[] { context, null }, null);
+        try
+        {
+            scanType.GetMethod("ReportProgress", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, new object[] { "Progress regression", 42, 100 });
+            if ((int)scanType.GetField("progressCompleted", flags).GetValue(scan) != 42 ||
+                (int)scanType.GetField("progressTotal", flags).GetValue(scan) != 100)
+                throw new Exception("Numeric scan progress was not published to the active window state.");
+            type.GetField("continuousDelete", flags).SetValue(dialog, true);
+            Tag extraSource = Array.Find(body.GetFaces(), face => face.Tag != selected).Tag;
+            type.GetField("recognitionSeeds", flags).SetValue(dialog, new[] { extraSource, selected });
+            scanType.GetMethod("RequestStop", flags).Invoke(scan, null);
+            bool canceled = false;
+            try { bestEffort.Invoke(dialog, new object[] { new[] { selected } }); }
+            catch (TargetInvocationException ex) { canceled = ex.InnerException is OperationCanceledException; }
+            if (!canceled || body.GetFaces().Length != 7)
+                throw new Exception("Stopped deletion must preserve geometry and report cancellation.");
+            var pending = new List<Tag>();
+            foreach (object job in (IEnumerable)type.GetField("primaryJobs", flags).GetValue(dialog))
+                pending.Add((Tag)job.GetType().GetField("Seed", flags).GetValue(job));
+            if (pending.Count != 2 || !pending.Contains(selected) || !pending.Contains(extraSource))
+                throw new Exception("Continuous cleanup must retain every original source in the pending queue.");
+            type.GetField("recognitionSeeds", flags).SetValue(dialog, new[] { selected });
+            type.GetField("primaryJobs", flags).SetValue(dialog, null);
+            type.GetField("retryJobs", flags).SetValue(dialog, null);
+            try { bestEffort.Invoke(dialog, new object[] { new[] { selected } }); }
+            catch (TargetInvocationException ex) { if (!(ex.InnerException is OperationCanceledException)) throw; }
+            var stoppedRegions = new HashSet<string>();
+            canceled = false;
+            try { removeMode.Invoke(dialog, new object[] {
+                (Face)NXOpen.Utilities.NXObjectManager.Get(selected), 3, stoppedRegions }); }
+            catch (TargetInvocationException ex) { canceled = ex.InnerException is OperationCanceledException; }
+            if (!canceled || stoppedRegions.Count != 0 || body.GetFaces().Length != 7)
+                throw new Exception("Stop before commit must not cache an unattempted chain as a failure.");
+        }
+        finally { ((IDisposable)scan).Dispose(); type.GetField("continuousDelete", flags).SetValue(dialog, false); }
+        foreach (string name in new[] { "bodies", "candidates", "retained" })
+        {
+            FieldInfo field = type.GetField(name, flags);
+            field.SetValue(dialog, Activator.CreateInstance(field.FieldType));
+        }
+        Tag excludedTag = Array.Find(body.GetFaces(), face => face.Tag != selected).Tag;
+        type.GetMethod("RestorePendingBlends", flags).Invoke(dialog,
+            new object[] { new[] { body.Tag }, new[] { selected, excludedTag }, new[] { selected } });
+        var retainedTags = (System.Collections.Generic.HashSet<Tag>)type.GetField("retained", flags).GetValue(dialog);
+        if (!retainedTags.SetEquals(new[] { selected }))
+            throw new Exception("Resume changed the manually reviewed selection.");
+        mark = session.SetUndoMark(Session.MarkVisibility.Invisible, "stopped delete resume regression");
+        try
+        {
+            if ((int)bestEffort.Invoke(dialog, new object[] { new[] { selected } }) != 1 || body.GetFaces().Length != 6)
+                throw new Exception("Stopped native deletion did not resume.");
+        }
+        finally { session.UndoToMark(mark, null); session.DeleteUndoMark(mark, null); }
         Console.WriteLine("PASS: all four live native recognition modes, weak radius, manual exclusion, streamed deletion, recognition budget, complete preview after budget, solid body, and undo. No part saved.");
+        Console.WriteLine("PASS: stop before native commit, reviewed selection restoration, pending queue resume; no part saved.");
+        Console.WriteLine("PASS: numeric progress, continuous cleanup beyond diagnostic budget, Stop still honored.");
     }
 }
 

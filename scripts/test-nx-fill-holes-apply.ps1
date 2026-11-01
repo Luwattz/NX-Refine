@@ -7,6 +7,8 @@ param(
     [switch]$AllReviewed,
     [string]$GroupsPath = '',
     [int]$ExpectedRemovedGroups = -1,
+    [switch]$StopAfterSuccess,
+    [string]$ProtectedFacesPath = '',
     [switch]$CompileOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -31,6 +33,11 @@ $env:PATH = (Join-Path $NXInstallDir 'NXBIN') + ';' + $env:PATH
 $mode = if ($AllReviewed) { 'all-reviewed' } else { 'small' }
 $nxArguments = @($executable, $copy, $plugin, $report, $BodyTag, $ExpectedPartialStatus, $mode)
 if ($GroupsPath) { $nxArguments += (Resolve-Path -LiteralPath $GroupsPath).Path; $nxArguments += $ExpectedRemovedGroups.ToString() }
+if ($StopAfterSuccess -or $ProtectedFacesPath) {
+    if (-not $GroupsPath -or -not $AllReviewed) { throw 'StopAfterSuccess requires GroupsPath and AllReviewed.' }
+    $nxArguments += $(if($StopAfterSuccess){'stop-after-success'}else{'no-stop'})
+}
+if ($ProtectedFacesPath) { $nxArguments += (Resolve-Path -LiteralPath $ProtectedFacesPath).Path }
 & (Join-Path $NXInstallDir 'NXBIN\run_dotnet_nxopen.exe') @nxArguments
 $result = $LASTEXITCODE
 Write-Host "Report: $report"

@@ -30,6 +30,16 @@ public static class NxFillHolesApplyRegression
     }
     private static HashSet<Tag> Tags(Part part)
     { return new HashSet<Tag>(part.Bodies.ToArray().SelectMany(b => b.GetFaces()).Select(f => f.Tag)); }
+    private static double[][] EdgeSamples(UFSession uf, Tag tag)
+    {
+        IntPtr evaluator=IntPtr.Zero;
+        try
+        {
+            uf.Eval.Initialize(tag,out evaluator);var limits=new double[2];uf.Eval.AskLimits(evaluator,limits);
+            return Enumerable.Range(0,9).Select(i=>{var point=new double[3];uf.Eval.Evaluate(evaluator,0,limits[0]+(limits[1]-limits[0])*i/8.0,point,new double[3]);return point;}).ToArray();
+        }
+        finally{if(evaluator!=IntPtr.Zero)uf.Eval.Free(evaluator);}
+    }
     private static object Prepare(Body body, Face[][] groups)
     {
         object instance = Create();
@@ -70,6 +80,19 @@ public static class NxFillHolesApplyRegression
         context = plugin.GetType("NXRefine.Core.NxContext").GetProperty("Current").GetValue(null, null);
         Body body = part.Bodies.ToArray().Single(b => b.Tag.ToString() == args[3]);
         HashSet<Tag> original = Tags(part);
+        var protectedFaces=new Dictionary<Tag,Tag[]>();
+        var protectedEdges=new Dictionary<Tag,double[][]>();
+        if(args.Length>9)
+        {
+            var ids=new HashSet<string>(File.ReadAllLines(args[9]).Where(line=>!string.IsNullOrWhiteSpace(line)&&!line.StartsWith("#")));
+            Face[] protectedRegion=body.GetFaces().Where(face=>ids.Contains(face.Tag.ToString())).ToArray();
+            if(protectedRegion.Length!=ids.Count)throw new Exception("Protected rib-end faces are missing from the fixture.");
+            foreach(Face face in protectedRegion)
+            {
+                protectedFaces[face.Tag]=face.GetEdges().Select(edge=>edge.Tag).ToArray();
+                foreach(Edge edge in face.GetEdges())protectedEdges[edge.Tag]=EdgeSamples(uf,edge.Tag);
+            }
+        }
         int originalBodies = part.Bodies.ToArray().Length;
         int originalSolids = part.Bodies.ToArray().Count(b => b.IsSolidBody);
         int originalFaults; int[] faults; Tag[] faultObjects;
@@ -90,9 +113,10 @@ public static class NxFillHolesApplyRegression
             report.WriteLine("RECOGNIZED_GROUPS=" + groups.Length);
             if (groups.Length < 2) throw new Exception("Fixture must expose at least two separate healable hole groups.");
             bool allReviewed = args.Length > 5 && args[5] == "all-reviewed";
+            bool stopAfterSuccess = args.Length > 8 && args[8] == "stop-after-success";
             int expectedStatus = args.Length > 4 ? int.Parse(args[4]) : 0;
             var borePoints = new List<double[]>();
-            if (cached && allReviewed && args.Length > 7 && int.Parse(args[7]) >= 0)
+            if (cached && allReviewed && args.Length > 7 && (int.Parse(args[7]) >= 0 || stopAfterSuccess))
             {
                 foreach (Face[] group in groups)
                 {
@@ -144,7 +168,36 @@ public static class NxFillHolesApplyRegression
             object dialog = Prepare(body, selected);
             try
             {
-                int result = (int)Call(dialog, "Apply");
+                bool stopSent=false;
+                Exception stopFailure=null;
+                var finished=new System.Threading.ManualResetEvent(false);
+                System.Threading.Thread stopper=null;
+                if(stopAfterSuccess)
+                {
+                    stopper=new System.Threading.Thread(delegate() {
+                        try
+                        {
+                            while(!finished.WaitOne(5))
+                            {
+                                object scan=type.GetField("activeDeleteScan",Hidden).GetValue(dialog);
+                                int count=(int)type.GetField("deleteSucceeded",Hidden).GetValue(dialog);
+                                if(scan==null || count==0)continue;
+                                // Identical managed request used by the Stop button;
+                                // this worker never calls NX APIs.
+                                scan.GetType().GetMethod("RequestStop",Hidden).Invoke(scan,null);
+                                stopSent=true;return;
+                            }
+                        }
+                        catch(Exception ex){stopFailure=ex;}
+                    });
+                    stopper.IsBackground=true;stopper.Start();
+                }
+                var applyClock=System.Diagnostics.Stopwatch.StartNew();
+                int result;
+                try { result = (int)Call(dialog, "Apply"); }
+                finally { finished.Set();if(stopper!=null)stopper.Join(5000);finished.Dispose(); }
+                report.WriteLine("APPLY_MS="+applyClock.ElapsedMilliseconds);
+                if(stopFailure!=null)throw new Exception("Stop worker failed.",stopFailure);
                 HashSet<Tag> live = Tags(part);
                 // Count distinct reviewed groups; the repeated first group in
                 // the small fixture intentionally fails after its initial heal.
@@ -153,8 +206,16 @@ public static class NxFillHolesApplyRegression
                 report.WriteLine("PARTIAL_APPLY STATUS=" + result + " REMOVED_GROUPS=" + removedGroups +
                     " REMAINING_GROUPS=" + remainingGroups + " REMOVED_FACES=" + original.Count(t => !live.Contains(t)));
                 if (result != expectedStatus) throw new Exception("Partial Apply returned the wrong callback status.");
+                if(stopAfterSuccess)
+                {
+                    if(!stopSent || removedGroups==0 || remainingGroups==0)throw new Exception("Stop did not preserve a partial completed result.");
+                    var pending=(List<Face[]>)type.GetField("groups",Hidden).GetValue(dialog);
+                    if(pending.Count!=remainingGroups)throw new Exception("Stop did not retain the remaining reviewed groups for continuation.");
+                    report.WriteLine("STOP_AFTER_SUCCESS=PASS COMPLETED="+removedGroups+" UNPROCESSED="+remainingGroups);
+                    report.WriteLine("STOP_PENDING_GROUPS_RETAINED=True");
+                }
                 if (!allReviewed && removedGroups != 2) throw new Exception("The failed group undid a previously successful group.");
-                if (allReviewed && cached && removedGroups == 0)
+                if (allReviewed && cached && removedGroups == 0 && !(args.Length>7 && int.Parse(args[7])==0))
                     throw new Exception("No cached reviewed hole group was healed.");
                 if (allReviewed && args.Length > 7 && int.Parse(args[7]) >= 0 && removedGroups != int.Parse(args[7]))
                     throw new Exception("The reviewed target coverage did not match the expected healed group count.");
@@ -168,10 +229,39 @@ public static class NxFillHolesApplyRegression
                     if(removed)filledSamples++;
                 }
                 if (borePoints.Count > 0) report.WriteLine("FILLED_BORE_POINTS=" + filledSamples+" SKIPPED_BORE_POINTS_PRESERVED="+(borePoints.Count-filledSamples));
+                if(protectedFaces.Count>0)
+                {
+                    var current=body.GetFaces().ToDictionary(face=>face.Tag);
+                    foreach(var pair in protectedFaces)
+                    {
+                        Face face;
+                        if(!current.TryGetValue(pair.Key,out face)||!new HashSet<Tag>(pair.Value).SetEquals(face.GetEdges().Select(edge=>edge.Tag)))
+                            throw new Exception("A protected rib end was deleted or its boundary changed.");
+                    }
+                    foreach(var pair in protectedEdges)
+                    {
+                        double[][] points=EdgeSamples(uf,pair.Key);
+                        if(Enumerable.Range(0,points.Length).Any(i=>Enumerable.Range(0,3).Sum(j=>Math.Pow(points[i][j]-pair.Value[i][j],2))>1e-12))
+                            throw new Exception("A protected rib-end curve moved.");
+                    }
+                    report.WriteLine("PROTECTED_RIB_ENDS_UNCHANGED="+protectedFaces.Count);
+                }
                 if (allReviewed && !cached && (removedGroups != 18 || remainingGroups != 3))
                     throw new Exception("Expected the user's rearLamp housing result: 18 healed, 3 skipped.");
                 if (result == 0)
                 {
+                    if(stopAfterSuccess)
+                    {
+                        if((int)Call(dialog,"Apply")!=0)throw new Exception("The retained holes could not be resumed.");
+                        live=Tags(part);
+                        if(groups.Any(group=>group.Any(face=>live.Contains(face.Tag))))throw new Exception("Resume left a reviewed target hole unfilled.");
+                        foreach(double[] point in borePoints)
+                        {
+                            int containment;uf.Modl.AskPointContainment(point,body.Tag,out containment);
+                            if(containment!=1)throw new Exception("Resume did not fill every original bore sample.");
+                        }
+                        report.WriteLine("RESUME_WITHOUT_RESCAN=PASS");
+                    }
                     Call(dialog, "Cancel");
                     if (!live.SetEquals(Tags(part))) throw new Exception("Cancel changed the accepted Apply result.");
                     report.WriteLine("CANCEL_AFTER_ACCEPTED_APPLY_PRESERVED=True");

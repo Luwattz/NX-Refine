@@ -56,6 +56,7 @@
     <Compile Include="Core\Issue.cs" />
     <Compile Include="Core\NxContext.cs" />
     <Compile Include="Core\SelectionScan.cs" />
+    <Compile Include="Core\FaceSurfaceSampler.cs" />
     <Compile Include="Analysis\GeometryAnalyzer.cs" />
     <Compile Include="Analysis\GapCriteria.cs" />
     <Compile Include="Analysis\FaceBoxIndex.cs" />

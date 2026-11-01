@@ -1,5 +1,15 @@
 # housing.prt Fill Holes investigation
 
+The original 34-group result included five rounded rib ends that are not
+holes. See [the correction and shape-preservation regression](FILL_HOLES_RIB_END_EXCLUSION.md).
+The expected result is now 29 groups / 64 faces; the six original arrow holes
+remain included. The historical verification below did not establish that
+every filled closed region was semantically a bore.
+
+Later scan/deletion performance changes and Stop support are recorded in
+[Fill Holes performance](FILL_HOLES_PERFORMANCE.md). Deployment hashes and
+timings below describe the earlier coverage-fix revision.
+
 Model: `C:\Users\chimp\Desktop\Geometry\housing.prt`, SHA256
 `ED737FAFEB2784064DCEA3527FB210010BD36561C52E85422CB3E3C7F943A816`.
 NX 2512 loads one solid body with 6120 faces. All runs use disposable copies,

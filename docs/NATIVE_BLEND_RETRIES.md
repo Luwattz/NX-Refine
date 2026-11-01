@@ -1,5 +1,10 @@
 # Native recognition retries after zero removals
 
+The active scheduler and cache policy is now described in
+[Remove Blends throughput](REMOVE_BLENDS_THROUGHPUT.md). The implementation
+and benchmark below document the preceding scheduler; immediate failure-cache
+clearing after each commit has been replaced by complete-pass deferral.
+
 This is the restored active policy following the user's request to revert the
 overly conservative region-safety experiment. Whole-region rollback, local
 shape veto and per-region budget allocation have been removed. Original seed
