@@ -51,7 +51,7 @@ Open PowerShell in the repository and run:
 
 The build copies `NXRefine.dll` to `deploy\application`.
 
-On a computer where `.ps1` files are blocked, run `scripts\update-nxrefine-nx2512.cmd` from Command Prompt. It builds and registers NX Refine for the current user without administrator rights; edit its `NX_INSTALL_DIR` if NX 2512 is installed elsewhere.
+On a computer where `.ps1` files are blocked, run `scripts\update-nxrefine-nx2512.cmd` from Command Prompt or double-click it. It builds and registers NX Refine for the current user without administrator rights. It detects NX from the current NX environment, NX 2512 registry entries, or common installation directories on mounted drive letters (including D:). To choose an installation explicitly, run `scripts\update-nxrefine-nx2512.cmd "D:\Program Files\Siemens\DesigncenterNX2512"` or set `NX_INSTALL_DIR`. The window pauses on completion or failure; set `NXREFINE_NO_PAUSE=1` for unattended use.
 
 ## Install the ribbon
 
@@ -175,3 +175,4 @@ See [Architecture](docs/ARCHITECTURE.md) for implementation details and the road
 ## License
 
 NX Refine is licensed under the [MIT License](LICENSE). Siemens and NX are trademarks of Siemens AG. This project is independent and is not affiliated with or endorsed by Siemens.
+

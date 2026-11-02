@@ -16,7 +16,24 @@ Run PowerShell from the repository root:
 
 The build creates the core library and one lightweight command-entry library for each ribbon button under `deploy\application`.
 
-If PowerShell scripts are blocked, run `scripts\update-nxrefine-nx2512.cmd` from Command Prompt instead. It builds the project and registers the `deploy` and bitmap paths for the current user without administrator rights. Edit `NX_INSTALL_DIR` and `CUSTOM_DIRECTORY_FILE` at the top of that file when needed. The registration steps below describe the equivalent manual setup.
+If PowerShell scripts are blocked, run `scripts\update-nxrefine-nx2512.cmd` from Command Prompt or double-click it. Keep `scripts\find-nx2512.cmd` beside it. No PowerShell script is required for this workflow. It builds the project and registers the `deploy` and bitmap paths for the current user without administrator rights. When `UGII_CUSTOM_DIRECTORY_FILE` is not already set, it also sets the user variable to the custom directory file it creates. The registration steps below describe the equivalent manual setup.
+
+The updater resolves the NX installation in this order:
+
+1. An installation root passed as the first argument, or the `NX_INSTALL_DIR` environment variable. An invalid explicit path fails instead of silently selecting another installation.
+2. The current NX environment: `UGII_BASE_DIR`, then `UGII_ROOT_DIR` (including an `NXBIN` or `UGII` subdirectory). These variables select the active installation; ensure it is NX 2512.
+3. NX 2512 installation keys and NX 2512 uninstall records in both Windows registry views.
+4. Directories named `NX*2512*` or `Designcenter*2512*` under each mounted drive letter's root, `Siemens`, `Program Files\Siemens`, and `Program Files`. This is a bounded search, not a recursive disk scan.
+
+Every candidate must contain `NXBIN\managed\NXOpen.dll`. The selected root is printed before the build. An arbitrary custom directory that is absent from the environment and registry can be supplied explicitly:
+
+```bat
+scripts\update-nxrefine-nx2512.cmd "D:\Engineering Tools\NX2512"
+```
+
+The window pauses on success or failure so build errors remain visible. Set `NXREFINE_NO_PAUSE=1` before running the updater in automation. Edit `CUSTOM_DIRECTORY_FILE` at the top of the updater only if you need a different default configuration file. After the first registration, sign out and back in before starting NX so the new user environment variable is available to its launcher.
+
+On Windows, run `tests\test-nx-install-detection.cmd` for isolated argument and NX environment-path checks, including spaces, parentheses, exclamation marks, and trailing separators. These checks use temporary marker files and do not require NX or change the registry. Registry discovery and drive-directory discovery still require verification on the target installation.
 
 ## Register the custom application
 
@@ -47,3 +64,4 @@ The `startup\nxrefine.men` file defines the commands, `startup\nxrefine_main.rtb
 ## Uninstall
 
 Close NX and remove only the NX Refine `deploy` path from the custom directory file. Do not delete entries belonging to other integrations. The repository directory can then be removed.
+
